@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cosmosdb-diagnostic-exporter
+  labels:
+    app: cosmosdb-diagnostic-exporter
+spec:
+  serviceName: cosmosdb-diagnostic-exporter
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cosmosdb-diagnostic-exporter
+  template:
+    metadata:
+      labels:
+        app: cosmosdb-diagnostic-exporter
+    spec:
+      containers:
+        - name: exporter
+          image: us-docker.pkg.dev/grafanalabs-dev/docker-prometheus-cosmosdb-diagnostic-exporter-dev/prometheus-cosmosdb-diagnostic-exporter:latest
+          args:
+            - -storage-account-url=<STORAGE_ACCOUNT_URL>
+            - -subscription-id=<SUBSCRIPTION_ID>
+            - -storage-resource-group=<STORAGE_RESOURCE_GROUP>
+            - -blob-path-prefix=<BLOB_PATH_PREFIX>
+            - -otlp-endpoint=<OTLP_ENDPOINT>
+            - -checkpoint-file=/data/checkpoint.json
+          env:
+            - name: OTLP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: cosmosdb-diagnostic-exporter
+                  key: otlp-username
+                  optional: true
+            - name: OTLP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cosmosdb-diagnostic-exporter
+                  key: otlp-password
+                  optional: true
+          volumeMounts:
+            - name: checkpoint
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: checkpoint
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Mi
