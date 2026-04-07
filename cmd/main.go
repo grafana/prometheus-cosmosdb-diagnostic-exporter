@@ -25,8 +25,6 @@ import (
 var containerNames = []string{
 	"insights-logs-dataplanerequests",
 	"insights-logs-partitionkeyruconsumption",
-	"insights-logs-partitionkeystatistics",
-	"insights-logs-queryruntimestatistics",
 }
 
 type Config struct {

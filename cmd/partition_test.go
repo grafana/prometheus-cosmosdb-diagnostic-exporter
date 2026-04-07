@@ -142,10 +142,10 @@ func TestBuildMinuteMetrics_WithRealTestData(t *testing.T) {
 	allRecords := append(dprRecords, pkruRecords...)
 	metrics := buildMinuteMetrics(allRecords, mapping, ts)
 
-	// Should have DPR count, duration, charge, and PKRU metrics.
+	// Should have DPR count and duration metrics.
 	countMetric := findOTLPMetric(metrics, "cosmosdb_data_plane_requests_1m")
 	require.NotNil(t, countMetric)
-	sum := countMetric.Data.(metricdata.Gauge[int64])
+	sum := countMetric.Data.(metricdata.Gauge[float64])
 	assert.Greater(t, len(sum.DataPoints), 0)
 
 	// Should have duration percentiles including avg.
@@ -166,10 +166,6 @@ func TestBuildMinuteMetrics_WithRealTestData(t *testing.T) {
 		}
 	}
 	assert.Greater(t, resolved, 0, "some DPR data points should have partition_key_range_id resolved")
-
-	// PKRU metric should exist.
-	ruMetric := findOTLPMetric(metrics, "cosmosdb_partition_key_ru_consumption_ru_1m")
-	require.NotNil(t, ruMetric)
 
 	// Verify timestamps are correct.
 	for _, dp := range sum.DataPoints {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math"
 	"slices"
 	"time"
 
@@ -18,29 +19,12 @@ var (
 )
 
 type dataPlaneKey struct {
-	Database, Collection, Operation, StatusCode, PartitionKeyRangeID string
+	AccountName, Database, Collection, Operation, StatusCode, PartitionKeyRangeID string
 }
 
 type dataPlaneAgg struct {
-	Count       int64
-	Durations   []float64
-	TotalCharge float64
-}
-
-type chargeKey struct {
-	Database, Collection, Operation string
-}
-
-type partitionKeyRUKey struct {
-	Database, Collection, PartitionKeyRangeID string
-}
-
-type partitionKeySizeKey struct {
-	Database, Collection, PartitionKey string
-}
-
-type queryRuntimeKey struct {
-	Database, Collection string
+	Count     int64
+	Durations []float64
 }
 
 // buildMinuteMetrics aggregates diagnostic records from a single minute into OTLP metrics.
@@ -48,10 +32,6 @@ type queryRuntimeKey struct {
 // The timestamp ts should be at :00 seconds of the minute.
 func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, ts time.Time) []metricdata.Metrics {
 	dpAgg := map[dataPlaneKey]*dataPlaneAgg{}
-	charges := map[chargeKey]float64{}
-	ruAgg := map[partitionKeyRUKey]float64{}
-	sizeAgg := map[partitionKeySizeKey]float64{}
-	qrsAgg := map[queryRuntimeKey]int64{}
 
 	for i := range records {
 		r := &records[i]
@@ -63,6 +43,7 @@ func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, t
 				rangeID = mapping.resolve(getStringProp(p, "requestResourceId"))
 			}
 			key := dataPlaneKey{
+				AccountName:         extractAccountName(r.ResourceID),
 				Database:            getStringProp(p, "databaseName"),
 				Collection:          getStringProp(p, "collectionName"),
 				Operation:           r.OperationName,
@@ -78,40 +59,6 @@ func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, t
 			if dur := getFloat64Prop(p, "duration"); dur >= 0 {
 				agg.Durations = append(agg.Durations, dur/1000) // ms → seconds
 			}
-			if charge := getFloat64Prop(p, "requestCharge"); charge > 0 {
-				ck := chargeKey{key.Database, key.Collection, key.Operation}
-				charges[ck] += charge
-			}
-
-		case "PartitionKeyRUConsumption":
-			p := r.Properties
-			key := partitionKeyRUKey{
-				Database:            getStringProp(p, "databaseName"),
-				Collection:          getStringProp(p, "collectionName"),
-				PartitionKeyRangeID: getStringProp(p, "partitionKeyRangeId"),
-			}
-			if charge := getFloat64Prop(p, "requestCharge"); charge > 0 {
-				ruAgg[key] += charge
-			}
-
-		case "PartitionKeyStatistics":
-			p := r.Properties
-			key := partitionKeySizeKey{
-				Database:     getStringProp(p, "databaseName"),
-				Collection:   getStringProp(p, "collectionName"),
-				PartitionKey: parsePartitionKeyValue(getStringProp(p, "partitionKey")),
-			}
-			if sizeKb := getFloat64Prop(p, "sizeKb"); sizeKb >= 0 {
-				sizeAgg[key] = sizeKb * 1024
-			}
-
-		case "QueryRuntimeStatistics":
-			p := r.Properties
-			key := queryRuntimeKey{
-				Database:   getStringProp(p, "databasename"),
-				Collection: getStringProp(p, "collectionname"),
-			}
-			qrsAgg[key]++
 		}
 	}
 
@@ -119,22 +66,23 @@ func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, t
 
 	// DataPlaneRequests: request count + duration percentiles.
 	if len(dpAgg) > 0 {
-		var countPoints []metricdata.DataPoint[int64]
+		var countPoints []metricdata.DataPoint[float64]
 		var durationPoints []metricdata.DataPoint[float64]
 
 		for key, agg := range dpAgg {
 			baseAttrs := []attribute.KeyValue{
+				attribute.String("account_name", key.AccountName),
 				attribute.String("database", key.Database),
 				attribute.String("collection", key.Collection),
 				attribute.String("operation", key.Operation),
 				attribute.String("status_code", key.StatusCode),
 				attribute.String("partition_key_range_id", key.PartitionKeyRangeID),
 			}
-			countPoints = append(countPoints, metricdata.DataPoint[int64]{
+			countPoints = append(countPoints, metricdata.DataPoint[float64]{
 				Attributes: attribute.NewSet(baseAttrs...),
 				StartTime:  ts,
 				Time:       ts,
-				Value:      agg.Count,
+				Value:      float64(agg.Count),
 			})
 
 			// Duration: avg + percentiles + max.
@@ -175,7 +123,7 @@ func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, t
 		metrics = append(metrics, metricdata.Metrics{
 			Name:        "cosmosdb_data_plane_requests_1m",
 			Description: "Number of CosmosDB data plane requests per minute.",
-			Data: metricdata.Gauge[int64]{
+			Data: metricdata.Gauge[float64]{
 				DataPoints: countPoints,
 			},
 		})
@@ -191,101 +139,6 @@ func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, t
 		}
 	}
 
-	// DataPlaneRequests: RU charge (aggregated across status codes).
-	if len(charges) > 0 {
-		var chargePoints []metricdata.DataPoint[float64]
-		for key, total := range charges {
-			chargePoints = append(chargePoints, metricdata.DataPoint[float64]{
-				Attributes: attribute.NewSet(
-					attribute.String("database", key.Database),
-					attribute.String("collection", key.Collection),
-					attribute.String("operation", key.Operation),
-				),
-				StartTime: ts,
-				Time:      ts,
-				Value:     total,
-			})
-		}
-		metrics = append(metrics, metricdata.Metrics{
-			Name:        "cosmosdb_data_plane_request_charge_ru_1m",
-			Description: "Request units (RU) consumed by CosmosDB data plane requests per minute.",
-			Data: metricdata.Gauge[float64]{
-				DataPoints: chargePoints,
-			},
-		})
-	}
-
-	// PartitionKeyRUConsumption.
-	if len(ruAgg) > 0 {
-		var ruPoints []metricdata.DataPoint[float64]
-		for key, total := range ruAgg {
-			ruPoints = append(ruPoints, metricdata.DataPoint[float64]{
-				Attributes: attribute.NewSet(
-					attribute.String("database", key.Database),
-					attribute.String("collection", key.Collection),
-					attribute.String("partition_key_range_id", key.PartitionKeyRangeID),
-				),
-				StartTime: ts,
-				Time:      ts,
-				Value:     total,
-			})
-		}
-		metrics = append(metrics, metricdata.Metrics{
-			Name:        "cosmosdb_partition_key_ru_consumption_ru_1m",
-			Description: "Request units (RU) consumed per partition key range per minute.",
-			Data: metricdata.Gauge[float64]{
-				DataPoints: ruPoints,
-			},
-		})
-	}
-
-	// PartitionKeyStatistics.
-	if len(sizeAgg) > 0 {
-		var sizePoints []metricdata.DataPoint[float64]
-		for key, size := range sizeAgg {
-			sizePoints = append(sizePoints, metricdata.DataPoint[float64]{
-				Attributes: attribute.NewSet(
-					attribute.String("database", key.Database),
-					attribute.String("collection", key.Collection),
-					attribute.String("partition_key", key.PartitionKey),
-				),
-				StartTime: ts,
-				Time:      ts,
-				Value:     size,
-			})
-		}
-		metrics = append(metrics, metricdata.Metrics{
-			Name:        "cosmosdb_partition_key_size_bytes",
-			Description: "Size of a partition key in bytes.",
-			Data: metricdata.Gauge[float64]{
-				DataPoints: sizePoints,
-			},
-		})
-	}
-
-	// QueryRuntimeStatistics.
-	if len(qrsAgg) > 0 {
-		var qrsPoints []metricdata.DataPoint[int64]
-		for key, count := range qrsAgg {
-			qrsPoints = append(qrsPoints, metricdata.DataPoint[int64]{
-				Attributes: attribute.NewSet(
-					attribute.String("database", key.Database),
-					attribute.String("collection", key.Collection),
-				),
-				StartTime: ts,
-				Time:      ts,
-				Value:     count,
-			})
-		}
-		metrics = append(metrics, metricdata.Metrics{
-			Name:        "cosmosdb_query_runtime_statistics_1m",
-			Description: "Number of CosmosDB query runtime statistics records per minute.",
-			Data: metricdata.Gauge[int64]{
-				DataPoints: qrsPoints,
-			},
-		})
-	}
-
 	return metrics
 }
 
@@ -296,6 +149,51 @@ func exportMinuteMetrics(ctx context.Context, exporter sdkmetric.Exporter, rm *m
 		return err
 	}
 	return nil
+}
+
+// countSeries returns the total number of data points (unique label combos) across all metrics.
+func countSeries(metrics []metricdata.Metrics) int {
+	var n int
+	for _, m := range metrics {
+		switch d := m.Data.(type) {
+		case metricdata.Gauge[float64]:
+			n += len(d.DataPoints)
+		case metricdata.Sum[int64]:
+			n += len(d.DataPoints)
+		case metricdata.Sum[float64]:
+			n += len(d.DataPoints)
+		}
+	}
+	return n
+}
+
+// buildNullMetrics creates a copy of the given metrics with all gauge values
+// set to NaN at the given timestamp. This causes the series to show as "no data"
+// instead of a flat line extending from the last real point.
+func buildNullMetrics(metrics []metricdata.Metrics, ts time.Time) []metricdata.Metrics {
+	var result []metricdata.Metrics
+	for _, m := range metrics {
+		switch d := m.Data.(type) {
+		case metricdata.Gauge[float64]:
+			nullPoints := make([]metricdata.DataPoint[float64], len(d.DataPoints))
+			for i, dp := range d.DataPoints {
+				nullPoints[i] = metricdata.DataPoint[float64]{
+					Attributes: dp.Attributes,
+					StartTime:  ts,
+					Time:       ts,
+					Value:      math.NaN(),
+				}
+			}
+			result = append(result, metricdata.Metrics{
+				Name:        m.Name,
+				Description: m.Description,
+				Data: metricdata.Gauge[float64]{
+					DataPoints: nullPoints,
+				},
+			})
+		}
+	}
+	return result
 }
 
 // computePercentile returns the p-th percentile from a sorted slice.

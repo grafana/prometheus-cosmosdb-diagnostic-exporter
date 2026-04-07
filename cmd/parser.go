@@ -9,9 +9,26 @@ import (
 
 type DiagnosticRecord struct {
 	Time          string         `json:"time"`
+	ResourceID    string         `json:"resourceId"`
 	Category      string         `json:"category"`
 	OperationName string         `json:"operationName"`
 	Properties    map[string]any `json:"properties"`
+}
+
+// extractAccountName extracts the database account name from a resourceId string
+// like "/SUBSCRIPTIONS/.../DATABASEACCOUNTS/ACCOUNT-NAME".
+func extractAccountName(resourceID string) string {
+	upper := strings.ToUpper(resourceID)
+	const marker = "/DATABASEACCOUNTS/"
+	idx := strings.LastIndex(upper, marker)
+	if idx < 0 {
+		return ""
+	}
+	name := resourceID[idx+len(marker):]
+	if i := strings.Index(name, "/"); i >= 0 {
+		name = name[:i]
+	}
+	return strings.ToLower(name)
 }
 
 // parsePartitionKeyValue extracts the value from a JSON array string like '["value"]'.
