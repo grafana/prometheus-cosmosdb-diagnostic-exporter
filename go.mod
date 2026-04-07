@@ -7,7 +7,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/storage/armstorage v1.8.1
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.4
 	github.com/go-kit/log v0.2.1
-	github.com/grafana/dskit v0.0.0-20260402131538-8d0d211734c0
+	github.com/grafana/dskit v0.0.0-20260407063910-fff5ee4217d2
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.42.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.42.0
