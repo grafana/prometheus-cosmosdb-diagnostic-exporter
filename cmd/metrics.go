@@ -30,7 +30,7 @@ type dataPlaneAgg struct {
 // buildMinuteMetrics aggregates diagnostic records from a single minute into OTLP metrics.
 // The partition mapping is used to resolve partition_key_range_id for DataPlaneRequests.
 // The timestamp ts should be at :00 seconds of the minute.
-func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, ts time.Time) []metricdata.Metrics {
+func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, cluster string, ts time.Time) []metricdata.Metrics {
 	dpAgg := map[dataPlaneKey]*dataPlaneAgg{}
 
 	for i := range records {
@@ -71,6 +71,7 @@ func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, t
 
 		for key, agg := range dpAgg {
 			baseAttrs := []attribute.KeyValue{
+				attribute.String("cluster", cluster),
 				attribute.String("account_name", key.AccountName),
 				attribute.String("database", key.Database),
 				attribute.String("collection", key.Collection),

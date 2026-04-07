@@ -140,7 +140,7 @@ func TestBuildMinuteMetrics_WithRealTestData(t *testing.T) {
 
 	ts := testTimestamp
 	allRecords := append(dprRecords, pkruRecords...)
-	metrics := buildMinuteMetrics(allRecords, mapping, ts)
+	metrics := buildMinuteMetrics(allRecords, mapping, "test-cluster", ts)
 
 	// Should have DPR count and duration metrics.
 	countMetric := findOTLPMetric(metrics, "cosmosdb_data_plane_requests_1m")

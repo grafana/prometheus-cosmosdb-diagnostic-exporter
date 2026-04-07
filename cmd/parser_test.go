@@ -26,7 +26,7 @@ var testTimestamp = time.Date(2026, 4, 2, 16, 38, 0, 0, time.UTC)
 
 func TestBuildMinuteMetrics_DataPlaneRequests(t *testing.T) {
 	records := parseRecords(t, dataPlaneRequestsFixture)
-	metrics := buildMinuteMetrics(records, nil, testTimestamp)
+	metrics := buildMinuteMetrics(records, nil, "test-cluster", testTimestamp)
 
 	// Request count: 4 records across 4 unique key combinations.
 	countMetric := findOTLPMetric(metrics, "cosmosdb_data_plane_requests_1m")
@@ -42,7 +42,7 @@ func TestBuildMinuteMetrics_DataPlaneRequests(t *testing.T) {
 
 	// Verify a specific data point.
 	dp := findFloat64DataPoint(sum.DataPoints, map[string]string{
-		"account_name": "mimir-dev-10", "database": "warpstream", "collection": "dynamo_adapter", "operation": "Read", "status_code": "200", "partition_key_range_id": "",
+		"cluster": "test-cluster", "account_name": "mimir-dev-10", "database": "warpstream", "collection": "dynamo_adapter", "operation": "Read", "status_code": "200", "partition_key_range_id": "",
 	})
 	require.NotNil(t, dp)
 	assert.Equal(t, 1.0, dp.Value)
@@ -56,7 +56,7 @@ func TestBuildMinuteMetrics_DataPlaneRequests(t *testing.T) {
 
 	// Check avg for the single Read/200 record (duration 2.2227ms → 0.0022227s).
 	avg := findFloat64DataPoint(durGauge.DataPoints, map[string]string{
-		"account_name": "mimir-dev-10", "database": "warpstream", "collection": "dynamo_adapter", "operation": "Read", "status_code": "200",
+		"cluster": "test-cluster", "account_name": "mimir-dev-10", "database": "warpstream", "collection": "dynamo_adapter", "operation": "Read", "status_code": "200",
 		"partition_key_range_id": "", "quantile": "avg",
 	})
 	require.NotNil(t, avg)
@@ -71,7 +71,7 @@ func TestBuildMinuteMetrics_WithPartitionMapping(t *testing.T) {
 	mapping.update(pkruRecords)
 
 	dprRecords := parseRecords(t, dataPlaneRequestsFixture)
-	metrics := buildMinuteMetrics(dprRecords, mapping, testTimestamp)
+	metrics := buildMinuteMetrics(dprRecords, mapping, "test-cluster", testTimestamp)
 
 	countMetric := findOTLPMetric(metrics, "cosmosdb_data_plane_requests_1m")
 	require.NotNil(t, countMetric)
@@ -80,7 +80,7 @@ func TestBuildMinuteMetrics_WithPartitionMapping(t *testing.T) {
 	// The Read/404 record has requestResourceId ending with doc_id=000000000000000000000478401387.
 	// 478401387 / 100000 = 4784 → matches partition key "rsmi_abc_4784" → range "1".
 	dp := findFloat64DataPoint(sum.DataPoints, map[string]string{
-		"account_name": "mimir-dev-10", "database": "warpstream", "collection": "rsm_logs_mimir_dev_10", "operation": "Read",
+		"cluster": "test-cluster", "account_name": "mimir-dev-10", "database": "warpstream", "collection": "rsm_logs_mimir_dev_10", "operation": "Read",
 		"status_code": "404", "partition_key_range_id": "1",
 	})
 	require.NotNil(t, dp, "should resolve numeric doc_id to partition via suffix mapping")
@@ -88,7 +88,7 @@ func TestBuildMinuteMetrics_WithPartitionMapping(t *testing.T) {
 
 	// Create operations have requestResourceId ending in /docs (no doc_id) → empty partition.
 	dp2 := findFloat64DataPoint(sum.DataPoints, map[string]string{
-		"account_name": "mimir-dev-10", "database": "warpstream", "collection": "rsm_logs_chunks_mimir_dev_10", "operation": "Create",
+		"cluster": "test-cluster", "account_name": "mimir-dev-10", "database": "warpstream", "collection": "rsm_logs_chunks_mimir_dev_10", "operation": "Create",
 		"status_code": "201", "partition_key_range_id": "",
 	})
 	require.NotNil(t, dp2, "Create ops without doc_id should have empty partition_key_range_id")
@@ -96,12 +96,12 @@ func TestBuildMinuteMetrics_WithPartitionMapping(t *testing.T) {
 
 func TestBuildMinuteMetrics_UnknownCategory(t *testing.T) {
 	records := []DiagnosticRecord{{Category: "UnknownCategory", Properties: map[string]any{}}}
-	metrics := buildMinuteMetrics(records, nil, testTimestamp)
+	metrics := buildMinuteMetrics(records, nil, "test-cluster", testTimestamp)
 	assert.Empty(t, metrics)
 }
 
 func TestBuildMinuteMetrics_EmptyRecords(t *testing.T) {
-	metrics := buildMinuteMetrics(nil, nil, testTimestamp)
+	metrics := buildMinuteMetrics(nil, nil, "test-cluster", testTimestamp)
 	assert.Empty(t, metrics)
 }
 

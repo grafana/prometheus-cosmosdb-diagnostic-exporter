@@ -32,6 +32,7 @@ type Config struct {
 	SubscriptionID       string
 	StorageResourceGroup string
 	BlobPathPrefix       string
+	Cluster              string
 	PollInterval         time.Duration
 	CheckpointFile       string
 	MaxAge               time.Duration
@@ -52,6 +53,7 @@ func (c *Config) RegisterFlags(f *flag.FlagSet) {
 	f.StringVar(&c.SubscriptionID, "subscription-id", "", "Azure subscription ID containing the storage account.")
 	f.StringVar(&c.StorageResourceGroup, "storage-resource-group", "", "Resource group of the storage account.")
 	f.StringVar(&c.BlobPathPrefix, "blob-path-prefix", "", "Optional prefix to scope blob listing (e.g. resourceId=SUBSCRIPTIONS/...).")
+	f.StringVar(&c.Cluster, "cluster", "", "Cluster label added to all exported metrics.")
 	f.DurationVar(&c.PollInterval, "poll-interval", time.Minute, "How frequently to poll for new blobs.")
 	f.StringVar(&c.CheckpointFile, "checkpoint-file", "./checkpoint.json", "Path to the checkpoint file for tracking processed blobs.")
 	f.DurationVar(&c.MaxAge, "max-age", 90*time.Minute, "Maximum age of blobs to process. Blobs older than this are skipped on startup or when the checkpoint is stale.")
@@ -85,6 +87,10 @@ func main() {
 	}
 	if appCfg.StorageResourceGroup == "" {
 		level.Error(logger).Log("msg", "-storage-resource-group is required")
+		os.Exit(1)
+	}
+	if appCfg.Cluster == "" {
+		level.Error(logger).Log("msg", "-cluster is required")
 		os.Exit(1)
 	}
 
@@ -139,7 +145,7 @@ func poll(ctx context.Context, client *azblob.Client, cfg *Config, exporter sdkm
 		return
 	}
 
-	if err := processMinutes(ctx, client, cfg.BlobPathPrefix, cfg.MaxAge, checkpoint, cfg.CheckpointFile, exporter, res, mapping, logger); err != nil {
+	if err := processMinutes(ctx, client, cfg.BlobPathPrefix, cfg.MaxAge, checkpoint, cfg.CheckpointFile, exporter, res, mapping, cfg.Cluster, logger); err != nil {
 		level.Error(logger).Log("msg", "failed to process minutes", "err", err)
 	}
 }

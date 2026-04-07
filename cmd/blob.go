@@ -193,6 +193,7 @@ func processMinutes(
 	exporter sdkmetric.Exporter,
 	res *resource.Resource,
 	mapping *partitionMapping,
+	cluster string,
 	logger log.Logger,
 ) error {
 	now := time.Now().UTC()
@@ -222,8 +223,6 @@ func processMinutes(
 		"from", minutes[0].Minute, "to", minutes[len(minutes)-1].Minute)
 
 	// Phase 3: Process each minute.
-	var lastMetrics []metricdata.Metrics
-	var lastMinute time.Time
 	for _, mb := range minutes {
 		var allRecords []DiagnosticRecord
 
@@ -256,7 +255,7 @@ func processMinutes(
 
 		// Build and export OTLP metrics.
 		level.Info(logger).Log("msg", "processing minute", "ts", mb.Minute, "records", len(allRecords))
-		metrics := buildMinuteMetrics(allRecords, mapping, mb.Minute)
+		metrics := buildMinuteMetrics(allRecords, mapping, cluster, mb.Minute)
 		if len(metrics) > 0 {
 			rm := &metricdata.ResourceMetrics{
 				Resource: res,
@@ -268,8 +267,22 @@ func processMinutes(
 			if err := exportMinuteMetrics(ctx, exporter, rm, logger); err != nil {
 				return err
 			}
-			lastMetrics = metrics
-			lastMinute = mb.Minute
+
+			// Push NaN points 30s after the real data to terminate gauge lines.
+			nullTS := mb.Minute.Add(30 * time.Second)
+			nullMetrics := buildNullMetrics(metrics, nullTS)
+			if len(nullMetrics) > 0 {
+				nullRM := &metricdata.ResourceMetrics{
+					Resource: res,
+					ScopeMetrics: []metricdata.ScopeMetrics{
+						{Metrics: nullMetrics},
+					},
+				}
+				level.Info(logger).Log("msg", "pushing null metrics to terminate gauge lines", "ts", nullTS, "series", countSeries(nullMetrics))
+				if err := exportMinuteMetrics(ctx, exporter, nullRM, logger); err != nil {
+					return err
+				}
+			}
 		}
 
 		// Update checkpoints for all blobs processed in this minute.
@@ -285,25 +298,6 @@ func processMinutes(
 		}
 		if err := saveCheckpoint(checkpointFile, checkpoint); err != nil {
 			level.Error(logger).Log("msg", "failed to save checkpoint", "err", err)
-		}
-	}
-
-	// Export NaN points one minute after the last real data to prevent flat-line
-	// gauge values for yet-unpublished minutes.
-	if len(lastMetrics) > 0 {
-		nullTS := lastMinute.Add(30 * time.Second)
-		nullMetrics := buildNullMetrics(lastMetrics, nullTS)
-		if len(nullMetrics) > 0 {
-			rm := &metricdata.ResourceMetrics{
-				Resource: res,
-				ScopeMetrics: []metricdata.ScopeMetrics{
-					{Metrics: nullMetrics},
-				},
-			}
-			level.Info(logger).Log("msg", "pushing null metrics to terminate gauge lines", "ts", nullTS, "series", countSeries(nullMetrics))
-			if err := exportMinuteMetrics(ctx, exporter, rm, logger); err != nil {
-				return err
-			}
 		}
 	}
 
