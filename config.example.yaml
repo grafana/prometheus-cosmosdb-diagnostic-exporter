@@ -1,0 +1,22 @@
+poll_interval: 1m
+max_age: 90m
+checkpoint_dir: ./checkpoints
+
+otlp:
+  endpoint: http://localhost:4318
+  # Supports environment variable expansion.
+  username: ${OTLP_USERNAME}
+  password: ${OTLP_PASSWORD}
+
+cells:
+  - cluster: cluster-1
+    storage_account_url: https://account1.blob.core.windows.net
+    subscription_id: 00000000-0000-0000-0000-000000000001
+    storage_resource_group: rg-cosmosdb-1
+    blob_path_prefix: ""
+
+  - cluster: cluster-2
+    storage_account_url: https://account2.blob.core.windows.net
+    subscription_id: 00000000-0000-0000-0000-000000000002
+    storage_resource_group: rg-cosmosdb-2
+    blob_path_prefix: ""

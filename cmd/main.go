@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"flag"
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -27,41 +27,6 @@ var containerNames = []string{
 	"insights-logs-partitionkeyruconsumption",
 }
 
-type Config struct {
-	StorageAccountURL    string
-	SubscriptionID       string
-	StorageResourceGroup string
-	BlobPathPrefix       string
-	Cluster              string
-	PollInterval         time.Duration
-	CheckpointFile       string
-	MaxAge               time.Duration
-	OTLPEndpoint         string
-	OTLPUsername         string
-	OTLPPassword         string
-}
-
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func (c *Config) RegisterFlags(f *flag.FlagSet) {
-	f.StringVar(&c.StorageAccountURL, "storage-account-url", "", "Azure Blob Storage account URL (e.g. https://myaccount.blob.core.windows.net).")
-	f.StringVar(&c.SubscriptionID, "subscription-id", "", "Azure subscription ID containing the storage account.")
-	f.StringVar(&c.StorageResourceGroup, "storage-resource-group", "", "Resource group of the storage account.")
-	f.StringVar(&c.BlobPathPrefix, "blob-path-prefix", "", "Optional prefix to scope blob listing (e.g. resourceId=SUBSCRIPTIONS/...).")
-	f.StringVar(&c.Cluster, "cluster", "", "Cluster label added to all exported metrics.")
-	f.DurationVar(&c.PollInterval, "poll-interval", time.Minute, "How frequently to poll for new blobs.")
-	f.StringVar(&c.CheckpointFile, "checkpoint-file", "./checkpoint.json", "Path to the checkpoint file for tracking processed blobs.")
-	f.DurationVar(&c.MaxAge, "max-age", 90*time.Minute, "Maximum age of blobs to process. Blobs older than this are skipped on startup or when the checkpoint is stale.")
-	f.StringVar(&c.OTLPEndpoint, "otlp-endpoint", "", "OTLP HTTP endpoint URL (e.g. http://localhost:4318). If empty, uses OTEL_EXPORTER_OTLP_ENDPOINT env var.")
-	f.StringVar(&c.OTLPUsername, "otlp-username", envOrDefault("OTLP_USERNAME", ""), "Username for OTLP basic auth (env: OTLP_USERNAME).")
-	f.StringVar(&c.OTLPPassword, "otlp-password", envOrDefault("OTLP_PASSWORD", ""), "Password for OTLP basic auth (env: OTLP_PASSWORD).")
-}
-
 func main() {
 	ctx := context.Background()
 
@@ -69,45 +34,24 @@ func main() {
 	logger := log.NewLogfmtLogger(log.NewSyncWriter(os.Stdout))
 	logger = log.With(logger, "ts", log.DefaultTimestampUTC)
 
-	// Register CLI flags.
-	appCfg := &Config{}
-	appCfg.RegisterFlags(flag.CommandLine)
-	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
-		level.Error(logger).Log("msg", "failed to parse flags", "err", err)
+	if len(os.Args) < 2 {
+		level.Error(logger).Log("msg", "usage: exporter <config-file>")
 		os.Exit(1)
 	}
 
-	if appCfg.StorageAccountURL == "" {
-		level.Error(logger).Log("msg", "-storage-account-url is required")
-		os.Exit(1)
-	}
-	if appCfg.SubscriptionID == "" {
-		level.Error(logger).Log("msg", "-subscription-id is required")
-		os.Exit(1)
-	}
-	if appCfg.StorageResourceGroup == "" {
-		level.Error(logger).Log("msg", "-storage-resource-group is required")
-		os.Exit(1)
-	}
-	if appCfg.Cluster == "" {
-		level.Error(logger).Log("msg", "-cluster is required")
-		os.Exit(1)
-	}
-
-	// Configure Azure blob client.
-	client, err := newBlobClient(ctx, appCfg, logger)
+	cfg, err := loadConfig(os.Args[1])
 	if err != nil {
-		level.Error(logger).Log("msg", "failed to create blob client", "err", err)
+		level.Error(logger).Log("msg", "failed to load config", "err", err)
 		os.Exit(1)
 	}
 
-	// Configure OTLP exporter.
+	// Configure OTLP exporter (shared across all cells).
 	var opts []otlpmetrichttp.Option
-	if appCfg.OTLPEndpoint != "" {
-		opts = append(opts, otlpmetrichttp.WithEndpointURL(appCfg.OTLPEndpoint))
+	if cfg.OTLP.Endpoint != "" {
+		opts = append(opts, otlpmetrichttp.WithEndpointURL(cfg.OTLP.Endpoint))
 	}
-	if appCfg.OTLPUsername != "" || appCfg.OTLPPassword != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(appCfg.OTLPUsername + ":" + appCfg.OTLPPassword))
+	if cfg.OTLP.Username != "" || cfg.OTLP.Password != "" {
+		encoded := base64.StdEncoding.EncodeToString([]byte(cfg.OTLP.Username + ":" + cfg.OTLP.Password))
 		opts = append(opts, otlpmetrichttp.WithHeaders(map[string]string{
 			"Authorization": "Basic " + encoded,
 		}))
@@ -123,55 +67,81 @@ func main() {
 		attribute.String("service.name", "cosmosdb-diagnostic-exporter"),
 	)
 
-	// Partition mapping is maintained across poll cycles (in memory).
-	mapping := newPartitionMapping()
+	level.Info(logger).Log("msg", "exporter started", "cells", len(cfg.Cells), "poll_interval", cfg.PollInterval, "max_age", cfg.MaxAge)
 
-	level.Info(logger).Log("msg", "exporter started", "poll_interval", appCfg.PollInterval, "max_age", appCfg.MaxAge)
-
-	// Run an initial poll at startup.
-	poll(ctx, client, appCfg, exporter, res, mapping, logger)
-
-	// Periodically poll for new blobs.
-	ticker := time.NewTicker(appCfg.PollInterval)
-	for range ticker.C {
-		poll(ctx, client, appCfg, exporter, res, mapping, logger)
+	// Launch one goroutine per cell. If any fails, crash the process.
+	errc := make(chan error, len(cfg.Cells))
+	for _, cell := range cfg.Cells {
+		go func() {
+			errc <- runCell(ctx, cfg, cell, exporter, res, logger)
+		}()
 	}
+
+	// Wait for the first error (any goroutine failing crashes the process).
+	err = <-errc
+	level.Error(logger).Log("msg", "cell failed, shutting down", "err", err)
+	os.Exit(1)
 }
 
-func poll(ctx context.Context, client *azblob.Client, cfg *Config, exporter sdkmetric.Exporter, res *resource.Resource, mapping *partitionMapping, logger log.Logger) {
-	checkpoint, err := loadCheckpoint(cfg.CheckpointFile)
+func runCell(ctx context.Context, cfg *Config, cell CellConfig, exporter sdkmetric.Exporter, res *resource.Resource, logger log.Logger) error {
+	cellLogger := log.With(logger, "cell", cell.Cluster)
+
+	client, err := newBlobClient(ctx, cell, cellLogger)
+	if err != nil {
+		return fmt.Errorf("creating blob client for %s: %w", cell.Cluster, err)
+	}
+
+	checkpointFile := filepath.Join(cfg.CheckpointDir, cell.Cluster+".json")
+	mapping := newPartitionMapping()
+
+	level.Info(cellLogger).Log("msg", "cell started", "storage_account", cell.StorageAccountURL, "checkpoint", checkpointFile)
+
+	// Run an initial poll at startup.
+	poll(ctx, client, cell, cfg, checkpointFile, exporter, res, mapping, cellLogger)
+
+	// Periodically poll for new blobs.
+	ticker := time.NewTicker(cfg.PollInterval)
+	for range ticker.C {
+		poll(ctx, client, cell, cfg, checkpointFile, exporter, res, mapping, cellLogger)
+	}
+
+	return fmt.Errorf("unexpected ticker stop for cell %s", cell.Cluster)
+}
+
+func poll(ctx context.Context, client *azblob.Client, cell CellConfig, cfg *Config, checkpointFile string, exporter sdkmetric.Exporter, res *resource.Resource, mapping *partitionMapping, logger log.Logger) {
+	checkpoint, err := loadCheckpoint(checkpointFile)
 	if err != nil {
 		level.Error(logger).Log("msg", "failed to load checkpoint", "err", err)
 		return
 	}
 
-	if err := processMinutes(ctx, client, cfg.BlobPathPrefix, cfg.MaxAge, checkpoint, cfg.CheckpointFile, exporter, res, mapping, cfg.Cluster, logger); err != nil {
+	if err := processMinutes(ctx, client, cell.BlobPathPrefix, cfg.MaxAge, checkpoint, checkpointFile, exporter, res, mapping, cell.Cluster, logger); err != nil {
 		level.Error(logger).Log("msg", "failed to process minutes", "err", err)
 	}
 }
 
 // newBlobClient fetches the storage account key via the ARM API (like az CLI does)
 // and returns a blob client using Shared Key authentication.
-func newBlobClient(ctx context.Context, cfg *Config, logger log.Logger) (*azblob.Client, error) {
+func newBlobClient(ctx context.Context, cell CellConfig, logger log.Logger) (*azblob.Client, error) {
 	cred, err := azidentity.NewDefaultAzureCredential(nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating Azure credential: %w", err)
 	}
 
 	// Extract account name from URL (e.g. "myaccount" from "https://myaccount.blob.core.windows.net").
-	parsed, err := url.Parse(cfg.StorageAccountURL)
+	parsed, err := url.Parse(cell.StorageAccountURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing storage account URL: %w", err)
 	}
 	accountName := strings.Split(parsed.Hostname(), ".")[0]
 
 	// Fetch storage account keys via ARM.
-	accountsClient, err := armstorage.NewAccountsClient(cfg.SubscriptionID, cred, nil)
+	accountsClient, err := armstorage.NewAccountsClient(cell.SubscriptionID, cred, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating ARM storage client: %w", err)
 	}
 
-	keys, err := accountsClient.ListKeys(ctx, cfg.StorageResourceGroup, accountName, nil)
+	keys, err := accountsClient.ListKeys(ctx, cell.StorageResourceGroup, accountName, nil)
 	if err != nil {
 		return nil, fmt.Errorf("listing storage account keys: %w", err)
 	}
@@ -186,5 +156,5 @@ func newBlobClient(ctx context.Context, cfg *Config, logger log.Logger) (*azblob
 		return nil, fmt.Errorf("creating shared key credential: %w", err)
 	}
 
-	return azblob.NewClientWithSharedKeyCredential(cfg.StorageAccountURL, sharedKey, nil)
+	return azblob.NewClientWithSharedKeyCredential(cell.StorageAccountURL, sharedKey, nil)
 }
