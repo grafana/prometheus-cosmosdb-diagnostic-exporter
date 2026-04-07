@@ -1,0 +1,67 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# These permissions are needed to assume roles from Github's OIDC.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  BUILDKIT_PROGRESS: 'plain'
+
+jobs:
+  build:
+    runs-on: ubuntu-x64
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build binary
+        run: |
+          make build-binary
+
+      # Lets us get branch name without bad characters like `/` that aren't allowed in the image tag.
+      - name: Inject slug/short variables
+        uses: rlespinasse/github-slug-action@6f7a8d2348e2a4aa5defafcdaafe5aef3f83bd4b # v5.4.0
+
+      - name: Set tag names
+        id: set_tag
+        run: |
+          echo "tag=${{ env.GITHUB_REF_SLUG }}-${{ env.GITHUB_SHA_SHORT }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        # See doc at: https://github.com/grafana/shared-workflows/tree/main/actions/docker-build-push-image
+        uses: grafana/shared-workflows/actions/docker-build-push-image@main
+        with:
+          platforms: linux/amd64,linux/arm64
+          gar-environment: prod
+          gar-image: prometheus-cosmosdb-diagnostic-exporter
+          context: .
+          cache-to: type=inline
+          push: ${{ github.ref_name == 'main' }}
+          build-args: |
+            REVISION=${{ env.GITHUB_SHA_SHORT }}
+          tags: |-
+            "${{ steps.set_tag.outputs.tag }}"
+          registries: gar
+
+      - name: Set summary
+        if: github.ref_name == 'main'
+        run: |
+          echo "**Docker Image:** ${{ steps.set_tag.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
