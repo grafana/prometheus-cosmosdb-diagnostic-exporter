@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 
@@ -12,6 +13,9 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/grafana/dskit/backoff"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/resource"
 )
 
 // blobPathTimeRe extracts y=YYYY/m=MM/d=DD/h=HH/m=MM from a blob path.
@@ -61,17 +65,76 @@ func listNewBlobs(ctx context.Context, client *azblob.Client, containerName, pre
 	return blobs, nil
 }
 
-// downloadAndProcessBlob downloads a blob and processes each JSON line as a diagnostic record.
-func downloadAndProcessBlob(ctx context.Context, client *azblob.Client, containerName, blobName string, metrics *Metrics, logger log.Logger) error {
+// filterBlobsByAge filters out blobs older than maxAge.
+func filterBlobsByAge(blobs []string, maxAge time.Duration, now time.Time) []string {
+	cutoff := now.Add(-maxAge)
+	filtered := make([]string, 0, len(blobs))
+	for _, b := range blobs {
+		if t := parseBlobPathTime(b); t.IsZero() || !t.Before(cutoff) {
+			filtered = append(filtered, b)
+		}
+	}
+	return filtered
+}
+
+// minuteBlobs groups blob paths by minute across all containers.
+type minuteBlobs struct {
+	Minute time.Time
+	Blobs  map[string][]string // containerName → []blobPaths
+}
+
+// groupByMinute groups blob paths from all containers by their minute timestamp
+// and excludes the global latest minute (which may still be receiving writes).
+func groupByMinute(containerBlobs map[string][]string) []minuteBlobs {
+	// Group by minute.
+	byMinute := map[time.Time]map[string][]string{}
+	for container, blobs := range containerBlobs {
+		for _, b := range blobs {
+			t := parseBlobPathTime(b)
+			if t.IsZero() {
+				continue
+			}
+			if byMinute[t] == nil {
+				byMinute[t] = map[string][]string{}
+			}
+			byMinute[t][container] = append(byMinute[t][container], b)
+		}
+	}
+
+	// Find the global latest minute across all containers.
+	var latestMinute time.Time
+	for t := range byMinute {
+		if t.After(latestMinute) {
+			latestMinute = t
+		}
+	}
+
+	// Exclude the latest minute and sort the rest.
+	var minutes []minuteBlobs
+	for t, blobs := range byMinute {
+		if t.Equal(latestMinute) {
+			continue
+		}
+		minutes = append(minutes, minuteBlobs{Minute: t, Blobs: blobs})
+	}
+	slices.SortFunc(minutes, func(a, b minuteBlobs) int {
+		return a.Minute.Compare(b.Minute)
+	})
+	return minutes
+}
+
+// downloadBlob downloads a blob and parses each JSON line as a diagnostic record.
+func downloadBlob(ctx context.Context, client *azblob.Client, containerName, blobName string, logger log.Logger) ([]DiagnosticRecord, error) {
 	resp, err := downloadBlobWithRetry(ctx, client, containerName, blobName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024) // 1MB max line size
 
+	var records []DiagnosticRecord
 	var lineNum int
 	for scanner.Scan() {
 		lineNum++
@@ -83,19 +146,16 @@ func downloadAndProcessBlob(ctx context.Context, client *azblob.Client, containe
 		var record DiagnosticRecord
 		if err := json.Unmarshal(line, &record); err != nil {
 			level.Warn(logger).Log("msg", "failed to parse log record", "blob", blobName, "line", lineNum, "err", err)
-			metrics.processingErrorsTotal.Inc()
 			continue
 		}
-
-		processRecord(&record, metrics)
-		metrics.recordsProcessedTotal.WithLabelValues(record.Category).Inc()
+		records = append(records, record)
 	}
 
 	if err := scanner.Err(); err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return records, nil
 }
 
 func downloadBlobWithRetry(ctx context.Context, client *azblob.Client, containerName, blobName string) (azblob.DownloadStreamResponse, error) {
@@ -120,61 +180,108 @@ func downloadBlobWithRetry(ctx context.Context, client *azblob.Client, container
 	return azblob.DownloadStreamResponse{}, lastErr
 }
 
-// processContainer lists and processes new blobs in a single container,
-// updating the checkpoint after each blob. Blobs older than maxAge are skipped.
-func processContainer(
+// processMinutes lists new blobs across all containers, groups them by minute,
+// and processes each minute: builds the partition mapping from PartitionKeyRUConsumption,
+// then aggregates all records into OTLP metrics and exports them.
+func processMinutes(
 	ctx context.Context,
 	client *azblob.Client,
-	containerName string,
 	prefix string,
 	maxAge time.Duration,
 	checkpoint *Checkpoint,
 	checkpointFile string,
-	metrics *Metrics,
+	exporter sdkmetric.Exporter,
+	res *resource.Resource,
+	mapping *partitionMapping,
 	logger log.Logger,
 ) error {
-	containerCp := checkpoint.Containers[containerName]
+	now := time.Now().UTC()
 
-	blobs, err := listNewBlobs(ctx, client, containerName, prefix, containerCp.LastBlobPath)
-	if err != nil {
-		return err
-	}
-
-	// Filter out blobs older than maxAge.
-	cutoff := time.Now().UTC().Add(-maxAge)
-	filtered := blobs[:0]
-	for _, b := range blobs {
-		if t := parseBlobPathTime(b); t.IsZero() || !t.Before(cutoff) {
-			filtered = append(filtered, b)
+	// Phase 1: List new blobs for all containers, filtered by age.
+	containerBlobs := map[string][]string{}
+	for _, containerName := range containerNames {
+		cp := checkpoint.Containers[containerName]
+		blobs, err := listNewBlobs(ctx, client, containerName, prefix, cp.LastBlobPath)
+		if err != nil {
+			level.Error(logger).Log("msg", "failed to list blobs", "container", containerName, "err", err)
+			continue
+		}
+		blobs = filterBlobsByAge(blobs, maxAge, now)
+		if len(blobs) > 0 {
+			containerBlobs[containerName] = blobs
 		}
 	}
-	blobs = filtered
 
-	if len(blobs) == 0 {
+	// Phase 2: Group by minute, excluding the global latest minute.
+	minutes := groupByMinute(containerBlobs)
+	if len(minutes) == 0 {
 		return nil
 	}
 
-	level.Info(logger).Log("msg", "processing new blobs", "container", containerName, "count", len(blobs))
+	level.Info(logger).Log("msg", "processing minutes", "count", len(minutes),
+		"from", minutes[0].Minute, "to", minutes[len(minutes)-1].Minute)
 
-	for _, blobName := range blobs {
-		if err := downloadAndProcessBlob(ctx, client, containerName, blobName, metrics, logger); err != nil {
-			level.Error(logger).Log("msg", "failed to process blob", "container", containerName, "blob", blobName, "err", err)
-			metrics.processingErrorsTotal.Inc()
-			return err
+	// Phase 3: Process each minute.
+	for _, mb := range minutes {
+		var allRecords []DiagnosticRecord
+
+		// Download PartitionKeyRUConsumption first to build the mapping.
+		pkruContainer := "insights-logs-partitionkeyruconsumption"
+		for _, blobName := range mb.Blobs[pkruContainer] {
+			records, err := downloadBlob(ctx, client, pkruContainer, blobName, logger)
+			if err != nil {
+				level.Error(logger).Log("msg", "failed to download blob", "container", pkruContainer, "blob", blobName, "err", err)
+				return err
+			}
+			mapping.update(records)
+			allRecords = append(allRecords, records...)
 		}
 
-		metrics.blobsProcessedTotal.Inc()
+		// Download remaining containers.
+		for containerName, blobs := range mb.Blobs {
+			if containerName == pkruContainer {
+				continue // Already processed above.
+			}
+			for _, blobName := range blobs {
+				records, err := downloadBlob(ctx, client, containerName, blobName, logger)
+				if err != nil {
+					level.Error(logger).Log("msg", "failed to download blob", "container", containerName, "blob", blobName, "err", err)
+					return err
+				}
+				allRecords = append(allRecords, records...)
+			}
+		}
 
-		containerCp.LastBlobPath = blobName
-		containerCp.LastProcessedTime = time.Now()
-		checkpoint.Containers[containerName] = containerCp
+		level.Info(logger).Log("msg", "processing minute", "ts", mb.Minute, "records", len(allRecords))
 
+		// Build and export OTLP metrics.
+		metrics := buildMinuteMetrics(allRecords, mapping, mb.Minute)
+		if len(metrics) > 0 {
+			rm := &metricdata.ResourceMetrics{
+				Resource: res,
+				ScopeMetrics: []metricdata.ScopeMetrics{
+					{Metrics: metrics},
+				},
+			}
+			if err := exportMinuteMetrics(ctx, exporter, rm, logger); err != nil {
+				return err
+			}
+		}
+
+		// Update checkpoints for all blobs processed in this minute.
+		for containerName, blobs := range mb.Blobs {
+			cp := checkpoint.Containers[containerName]
+			for _, b := range blobs {
+				if b > cp.LastBlobPath {
+					cp.LastBlobPath = b
+				}
+			}
+			cp.LastProcessedTime = time.Now()
+			checkpoint.Containers[containerName] = cp
+		}
 		if err := saveCheckpoint(checkpointFile, checkpoint); err != nil {
 			level.Error(logger).Log("msg", "failed to save checkpoint", "err", err)
-			metrics.processingErrorsTotal.Inc()
 		}
-
-		metrics.lastProcessedTimestampSeconds.SetToCurrentTime()
 	}
 
 	return nil

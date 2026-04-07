@@ -5,21 +5,22 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-const dataPlaneRequestsFixture = `{ "time": "2026-04-02T16:38:34Z", "category": "DataPlaneRequests", "operationName": "Read", "properties": {"statusCode": "200","duration": "2.222700","requestCharge": "2.000000","databaseName": "warpstream","collectionName": "dynamo_adapter"}}
-{ "time": "2026-04-02T16:38:38Z", "category": "DataPlaneRequests", "operationName": "Read", "properties": {"statusCode": "404","duration": "2.213000","requestCharge": "2.000000","databaseName": "warpstream","collectionName": "rsm_logs_mimir_dev_10"}}
-{ "time": "2026-04-02T16:38:51Z", "category": "DataPlaneRequests", "operationName": "Create", "properties": {"statusCode": "200","duration": "2.508000","requestCharge": "5.950000","databaseName": "warpstream","collectionName": "rsm_snapshots_mimir_dev_10"}}
-{ "time": "2026-04-02T16:38:56Z", "category": "DataPlaneRequests", "operationName": "Create", "properties": {"statusCode": "201","duration": "7.341900","requestCharge": "5.900000","databaseName": "warpstream","collectionName": "rsm_logs_chunks_mimir_dev_10"}}`
+const dataPlaneRequestsFixture = `{ "time": "2026-04-02T16:38:34Z", "category": "DataPlaneRequests", "operationName": "Read", "properties": {"statusCode": "200","duration": "2.222700","requestCharge": "2.000000","databaseName": "warpstream","collectionName": "dynamo_adapter","requestResourceId": "/dbs/warpstream/colls/dynamo_adapter/docs/rsm_cluster"}}
+{ "time": "2026-04-02T16:38:38Z", "category": "DataPlaneRequests", "operationName": "Read", "properties": {"statusCode": "404","duration": "2.213000","requestCharge": "2.000000","databaseName": "warpstream","collectionName": "rsm_logs_mimir_dev_10","requestResourceId": "/dbs/warpstream/colls/rsm_logs_mimir_dev_10/docs/000000000000000000000478401387"}}
+{ "time": "2026-04-02T16:38:51Z", "category": "DataPlaneRequests", "operationName": "Create", "properties": {"statusCode": "200","duration": "2.508000","requestCharge": "5.950000","databaseName": "warpstream","collectionName": "rsm_snapshots_mimir_dev_10","requestResourceId": "/dbs/warpstream/colls/rsm_snapshots_mimir_dev_10/docs"}}
+{ "time": "2026-04-02T16:38:56Z", "category": "DataPlaneRequests", "operationName": "Create", "properties": {"statusCode": "201","duration": "7.341900","requestCharge": "5.900000","databaseName": "warpstream","collectionName": "rsm_logs_chunks_mimir_dev_10","requestResourceId": "/dbs/warpstream/colls/rsm_logs_chunks_mimir_dev_10/docs"}}`
 
-const partitionKeyRUConsumptionFixture = `{ "time": "2026-04-02T16:52:00Z", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"warpstream","collectionName":"rsm_logs_mimir_dev_10","partitionKeyRangeId":"1","requestCharge":"1.000000"}}
-{ "time": "2026-04-02T16:52:00Z", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"warpstream","collectionName":"rsm_logs_mimir_dev_10","partitionKeyRangeId":"1","requestCharge":"3.500000"}}
-{ "time": "2026-04-02T16:52:00Z", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"warpstream","collectionName":"rsm_logs_mimir_dev_10","partitionKeyRangeId":"2","requestCharge":"2.000000"}}`
+const partitionKeyRUConsumptionFixture = `{ "time": "2026-04-02T16:52:00Z", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"warpstream","collectionName":"rsm_logs_mimir_dev_10","partitionKeyRangeId":"1","requestCharge":"1.000000","partitionKey":"[\"rsmi_abc_4784\"]"}}
+{ "time": "2026-04-02T16:52:00Z", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"warpstream","collectionName":"rsm_logs_mimir_dev_10","partitionKeyRangeId":"1","requestCharge":"3.500000","partitionKey":"[\"rsmi_abc_4784\"]"}}
+{ "time": "2026-04-02T16:52:00Z", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"warpstream","collectionName":"rsm_logs_mimir_dev_10","partitionKeyRangeId":"2","requestCharge":"2.000000","partitionKey":"[\"rsmi_abc_4785\"]"}}`
 
 const partitionKeyStatisticsFixture = `{ "time": "2026-04-02T16:52:38Z", "category": "PartitionKeyStatistics", "properties": {"databaseName": "warpstream", "collectionName": "rsm_logs_mimir_dev_10", "partitionKey": "[\"rsmi_c9642ecd_4d06_4865_a9f5_3ffe6acd66c3_4711\"]", "sizeKb": 100707}}
 { "time": "2026-04-02T16:52:38Z", "category": "PartitionKeyStatistics", "properties": {"databaseName": "warpstream", "collectionName": "rsm_logs_mimir_dev_10", "partitionKey": "[\"rsmi_c9642ecd_4d06_4865_a9f5_3ffe6acd66c3_4765\"]", "sizeKb": 100707}}
@@ -28,117 +29,173 @@ const partitionKeyStatisticsFixture = `{ "time": "2026-04-02T16:52:38Z", "catego
 const queryRuntimeStatisticsFixture = `{ "time": "2026-04-02T16:53:03Z", "category": "QueryRuntimeStatistics", "properties": {"databasename":"warpstream","collectionname":"rsm_snapshots_mimir_dev_10","queryexecutionstatus":"Finished","querytext":"{\"query\":\"SELECT TOP 1 * FROM ROOT r\"}"}}
 { "time": "2026-04-02T16:53:05Z", "category": "QueryRuntimeStatistics", "properties": {"databasename":"warpstream","collectionname":"rsm_snapshots_mimir_dev_10","queryexecutionstatus":"Finished","querytext":"{\"query\":\"SELECT TOP 1 * FROM ROOT r\"}"}}`
 
-func TestProcessDataPlaneRequests(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	metrics := newMetrics(reg)
+var testTimestamp = time.Date(2026, 4, 2, 16, 38, 0, 0, time.UTC)
 
+func TestBuildMinuteMetrics_DataPlaneRequests(t *testing.T) {
 	records := parseRecords(t, dataPlaneRequestsFixture)
-	for _, r := range records {
-		processRecord(&r, metrics)
+	metrics := buildMinuteMetrics(records, nil, testTimestamp)
+
+	// Request count: 4 records across 4 unique key combinations.
+	countMetric := findOTLPMetric(metrics, "cosmosdb_data_plane_requests_1m")
+	require.NotNil(t, countMetric)
+	sum := countMetric.Data.(metricdata.Gauge[int64])
+
+	var totalCount int64
+	for _, dp := range sum.DataPoints {
+		totalCount += dp.Value
+		assert.Equal(t, testTimestamp, dp.Time)
 	}
+	assert.Equal(t, int64(4), totalCount)
 
-	families := gatherMetrics(t, reg)
+	// Verify a specific data point.
+	dp := findInt64DataPoint(sum.DataPoints, map[string]string{
+		"database": "warpstream", "collection": "dynamo_adapter", "operation": "Read", "status_code": "200", "partition_key_range_id": "",
+	})
+	require.NotNil(t, dp)
+	assert.Equal(t, int64(1), dp.Value)
 
-	// 4 records total: 2 Read (200 + 404), 2 Create (200 + 201).
-	counter := findMetric(families, "cosmosdb_data_plane_requests_total")
-	require.NotNil(t, counter)
-	assert.Equal(t, 4.0, sumCounterValues(counter))
+	// Duration percentiles + avg exist.
+	durMetric := findOTLPMetric(metrics, "cosmosdb_data_plane_request_duration_seconds")
+	require.NotNil(t, durMetric)
+	durGauge := durMetric.Data.(metricdata.Gauge[float64])
+	// Each of the 4 keys produces 6 points: avg + 4 percentiles + max.
+	assert.Equal(t, 4*6, len(durGauge.DataPoints))
 
-	// Check specific label combinations.
-	assert.Equal(t, 1.0, getCounterValue(counter, map[string]string{
+	// Check avg for the single Read/200 record (duration 2.2227ms → 0.0022227s).
+	avg := findFloat64DataPoint(durGauge.DataPoints, map[string]string{
 		"database": "warpstream", "collection": "dynamo_adapter", "operation": "Read", "status_code": "200",
-	}))
-	assert.Equal(t, 1.0, getCounterValue(counter, map[string]string{
-		"database": "warpstream", "collection": "rsm_logs_mimir_dev_10", "operation": "Read", "status_code": "404",
-	}))
+		"partition_key_range_id": "", "quantile": "avg",
+	})
+	require.NotNil(t, avg)
+	assert.InDelta(t, 0.0022227, avg.Value, 0.0001)
 
-	// Histogram has all 4 observations.
-	hist := findMetric(families, "cosmosdb_data_plane_request_duration_seconds")
-	require.NotNil(t, hist)
-	assert.Equal(t, uint64(4), sumHistogramCounts(hist))
-
-	// RU charge: 2.0 + 2.0 + 5.95 + 5.9 = 15.85.
-	charge := findMetric(families, "cosmosdb_data_plane_request_charge_total")
-	require.NotNil(t, charge)
-	assert.InDelta(t, 15.85, sumCounterValues(charge), 0.01)
+	// RU charge: 2.0 + 2.0 + 5.95 + 5.9 = 15.85 (aggregated by db/collection/op).
+	chargeMetric := findOTLPMetric(metrics, "cosmosdb_data_plane_request_charge_ru_1m")
+	require.NotNil(t, chargeMetric)
+	chargeSum := chargeMetric.Data.(metricdata.Gauge[float64])
+	var totalCharge float64
+	for _, dp := range chargeSum.DataPoints {
+		totalCharge += dp.Value
+	}
+	assert.InDelta(t, 15.85, totalCharge, 0.01)
 }
 
-func TestProcessPartitionKeyRUConsumption(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	metrics := newMetrics(reg)
+func TestBuildMinuteMetrics_WithPartitionMapping(t *testing.T) {
+	// Build mapping from PKRU records, then verify DPR records get enriched.
+	pkruRecords := parseRecords(t, partitionKeyRUConsumptionFixture)
+	mapping := newPartitionMapping()
+	mapping.update(pkruRecords)
 
+	dprRecords := parseRecords(t, dataPlaneRequestsFixture)
+	metrics := buildMinuteMetrics(dprRecords, mapping, testTimestamp)
+
+	countMetric := findOTLPMetric(metrics, "cosmosdb_data_plane_requests_1m")
+	require.NotNil(t, countMetric)
+	sum := countMetric.Data.(metricdata.Gauge[int64])
+
+	// The Read/404 record has requestResourceId ending with doc_id=000000000000000000000478401387.
+	// 478401387 / 100000 = 4784 → matches partition key "rsmi_abc_4784" → range "1".
+	dp := findInt64DataPoint(sum.DataPoints, map[string]string{
+		"database": "warpstream", "collection": "rsm_logs_mimir_dev_10", "operation": "Read",
+		"status_code": "404", "partition_key_range_id": "1",
+	})
+	require.NotNil(t, dp, "should resolve numeric doc_id to partition via suffix mapping")
+	assert.Equal(t, int64(1), dp.Value)
+
+	// Create operations have requestResourceId ending in /docs (no doc_id) → empty partition.
+	dp2 := findInt64DataPoint(sum.DataPoints, map[string]string{
+		"database": "warpstream", "collection": "rsm_logs_chunks_mimir_dev_10", "operation": "Create",
+		"status_code": "201", "partition_key_range_id": "",
+	})
+	require.NotNil(t, dp2, "Create ops without doc_id should have empty partition_key_range_id")
+}
+
+func TestBuildMinuteMetrics_PartitionKeyRUConsumption(t *testing.T) {
 	records := parseRecords(t, partitionKeyRUConsumptionFixture)
-	for _, r := range records {
-		processRecord(&r, metrics)
-	}
+	metrics := buildMinuteMetrics(records, nil, testTimestamp)
 
-	families := gatherMetrics(t, reg)
-	counter := findMetric(families, "cosmosdb_partition_key_ru_consumption_total")
-	require.NotNil(t, counter)
+	ruMetric := findOTLPMetric(metrics, "cosmosdb_partition_key_ru_consumption_ru_1m")
+	require.NotNil(t, ruMetric)
+	ruSum := ruMetric.Data.(metricdata.Gauge[float64])
 
-	// Partition range 1: 1.0 + 3.5 = 4.5, range 2: 2.0.
-	assert.InDelta(t, 4.5, getCounterValue(counter, map[string]string{
+	// Partition range 1: 1.0 + 3.5 = 4.5.
+	dp1 := findFloat64DataPoint(ruSum.DataPoints, map[string]string{
 		"database": "warpstream", "collection": "rsm_logs_mimir_dev_10", "partition_key_range_id": "1",
-	}), 0.01)
-	assert.InDelta(t, 2.0, getCounterValue(counter, map[string]string{
+	})
+	require.NotNil(t, dp1)
+	assert.InDelta(t, 4.5, dp1.Value, 0.01)
+
+	// Partition range 2: 2.0.
+	dp2 := findFloat64DataPoint(ruSum.DataPoints, map[string]string{
 		"database": "warpstream", "collection": "rsm_logs_mimir_dev_10", "partition_key_range_id": "2",
-	}), 0.01)
+	})
+	require.NotNil(t, dp2)
+	assert.InDelta(t, 2.0, dp2.Value, 0.01)
 }
 
-func TestProcessPartitionKeyStatistics(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	metrics := newMetrics(reg)
-
+func TestBuildMinuteMetrics_PartitionKeyStatistics(t *testing.T) {
 	records := parseRecords(t, partitionKeyStatisticsFixture)
-	for _, r := range records {
-		processRecord(&r, metrics)
-	}
+	metrics := buildMinuteMetrics(records, nil, testTimestamp)
 
-	families := gatherMetrics(t, reg)
-	gauge := findMetric(families, "cosmosdb_partition_key_size_bytes")
-	require.NotNil(t, gauge)
+	sizeMetric := findOTLPMetric(metrics, "cosmosdb_partition_key_size_bytes")
+	require.NotNil(t, sizeMetric)
+	sizeGauge := sizeMetric.Data.(metricdata.Gauge[float64])
 
 	// 100707 KB * 1024 = bytes.
-	assert.Equal(t, 100707.0*1024, getGaugeValue(gauge, map[string]string{
+	dp := findFloat64DataPoint(sizeGauge.DataPoints, map[string]string{
 		"database": "warpstream", "collection": "rsm_logs_mimir_dev_10",
 		"partition_key": "rsmi_c9642ecd_4d06_4865_a9f5_3ffe6acd66c3_4711",
-	}))
+	})
+	require.NotNil(t, dp)
+	assert.Equal(t, 100707.0*1024, dp.Value)
 
 	// 5430 KB for snapshots collection.
-	assert.Equal(t, 5430.0*1024, getGaugeValue(gauge, map[string]string{
+	dp2 := findFloat64DataPoint(sizeGauge.DataPoints, map[string]string{
 		"database": "warpstream", "collection": "rsm_snapshots_mimir_dev_10",
 		"partition_key": "rsmi_c9642ecd_4d06_4865_a9f5_3ffe6acd66c3",
-	}))
+	})
+	require.NotNil(t, dp2)
+	assert.Equal(t, 5430.0*1024, dp2.Value)
 }
 
-func TestProcessQueryRuntimeStatistics(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	metrics := newMetrics(reg)
-
+func TestBuildMinuteMetrics_QueryRuntimeStatistics(t *testing.T) {
 	records := parseRecords(t, queryRuntimeStatisticsFixture)
-	for _, r := range records {
-		processRecord(&r, metrics)
-	}
+	metrics := buildMinuteMetrics(records, nil, testTimestamp)
 
-	families := gatherMetrics(t, reg)
-	counter := findMetric(families, "cosmosdb_query_runtime_statistics_total")
-	require.NotNil(t, counter)
+	qrsMetric := findOTLPMetric(metrics, "cosmosdb_query_runtime_statistics_1m")
+	require.NotNil(t, qrsMetric)
+	qrsSum := qrsMetric.Data.(metricdata.Gauge[int64])
 
-	assert.Equal(t, 2.0, getCounterValue(counter, map[string]string{
+	dp := findInt64DataPoint(qrsSum.DataPoints, map[string]string{
 		"database": "warpstream", "collection": "rsm_snapshots_mimir_dev_10",
-	}))
+	})
+	require.NotNil(t, dp)
+	assert.Equal(t, int64(2), dp.Value)
 }
 
-func TestProcessRecordUnknownCategory(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	metrics := newMetrics(reg)
+func TestBuildMinuteMetrics_UnknownCategory(t *testing.T) {
+	records := []DiagnosticRecord{{Category: "UnknownCategory", Properties: map[string]any{}}}
+	metrics := buildMinuteMetrics(records, nil, testTimestamp)
+	assert.Empty(t, metrics)
+}
 
-	record := &DiagnosticRecord{Category: "UnknownCategory", Properties: map[string]any{}}
-	processRecord(record, metrics)
+func TestBuildMinuteMetrics_EmptyRecords(t *testing.T) {
+	metrics := buildMinuteMetrics(nil, nil, testTimestamp)
+	assert.Empty(t, metrics)
+}
 
-	// Should not panic and no metrics should be emitted for business metrics.
-	families := gatherMetrics(t, reg)
-	assert.Nil(t, findMetric(families, "cosmosdb_data_plane_requests_total"))
+func TestComputePercentile(t *testing.T) {
+	sorted := []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+
+	assert.Equal(t, 5.5, computePercentile(sorted, 0.5))
+	assert.InDelta(t, 9.55, computePercentile(sorted, 0.95), 0.01)
+	assert.Equal(t, 10.0, computePercentile(sorted, 1.0))
+
+	// Single element.
+	assert.Equal(t, 42.0, computePercentile([]float64{42}, 0.99))
+
+	// Empty.
+	assert.Equal(t, 0.0, computePercentile(nil, 0.5))
 }
 
 func TestParsePartitionKeyValue(t *testing.T) {
@@ -198,65 +255,44 @@ func parseRecords(t *testing.T, data string) []DiagnosticRecord {
 	return records
 }
 
-func gatherMetrics(t *testing.T, reg *prometheus.Registry) map[string]*dto.MetricFamily {
-	t.Helper()
-	families, err := reg.Gather()
-	require.NoError(t, err)
-
-	result := make(map[string]*dto.MetricFamily, len(families))
-	for _, f := range families {
-		result[f.GetName()] = f
+func findOTLPMetric(metrics []metricdata.Metrics, name string) *metricdata.Metrics {
+	for i := range metrics {
+		if metrics[i].Name == name {
+			return &metrics[i]
+		}
 	}
-	return result
+	return nil
 }
 
-func findMetric(families map[string]*dto.MetricFamily, name string) *dto.MetricFamily {
-	return families[name]
-}
-
-func matchLabels(m *dto.Metric, labels map[string]string) bool {
-	if len(m.GetLabel()) != len(labels) {
+func matchAttributes(set attribute.Set, expected map[string]string) bool {
+	if set.Len() != len(expected) {
 		return false
 	}
-	for _, lp := range m.GetLabel() {
-		v, ok := labels[lp.GetName()]
-		if !ok || v != lp.GetValue() {
+	iter := set.Iter()
+	for iter.Next() {
+		kv := iter.Attribute()
+		v, ok := expected[string(kv.Key)]
+		if !ok || v != kv.Value.AsString() {
 			return false
 		}
 	}
 	return true
 }
 
-func getCounterValue(family *dto.MetricFamily, labels map[string]string) float64 {
-	for _, m := range family.GetMetric() {
-		if matchLabels(m, labels) {
-			return m.GetCounter().GetValue()
+func findInt64DataPoint(points []metricdata.DataPoint[int64], attrs map[string]string) *metricdata.DataPoint[int64] {
+	for i := range points {
+		if matchAttributes(points[i].Attributes, attrs) {
+			return &points[i]
 		}
 	}
-	return -1
+	return nil
 }
 
-func getGaugeValue(family *dto.MetricFamily, labels map[string]string) float64 {
-	for _, m := range family.GetMetric() {
-		if matchLabels(m, labels) {
-			return m.GetGauge().GetValue()
+func findFloat64DataPoint(points []metricdata.DataPoint[float64], attrs map[string]string) *metricdata.DataPoint[float64] {
+	for i := range points {
+		if matchAttributes(points[i].Attributes, attrs) {
+			return &points[i]
 		}
 	}
-	return -1
-}
-
-func sumCounterValues(family *dto.MetricFamily) float64 {
-	var sum float64
-	for _, m := range family.GetMetric() {
-		sum += m.GetCounter().GetValue()
-	}
-	return sum
-}
-
-func sumHistogramCounts(family *dto.MetricFamily) uint64 {
-	var sum uint64
-	for _, m := range family.GetMetric() {
-		sum += m.GetHistogram().GetSampleCount()
-	}
-	return sum
+	return nil
 }

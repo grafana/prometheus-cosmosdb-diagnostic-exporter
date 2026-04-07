@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -15,9 +15,10 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 )
 
 // Azure diagnostic log container names (fixed by Azure).
@@ -29,35 +30,40 @@ var containerNames = []string{
 }
 
 type Config struct {
-	ServerAddress      string
-	ServerPort         int
-	StorageAccountURL  string
-	SubscriptionID     string
+	StorageAccountURL    string
+	SubscriptionID       string
 	StorageResourceGroup string
-	BlobPathPrefix     string
-	PollInterval       time.Duration
-	CheckpointFile     string
-	MaxAge             time.Duration
+	BlobPathPrefix       string
+	PollInterval         time.Duration
+	CheckpointFile       string
+	MaxAge               time.Duration
+	OTLPEndpoint         string
+	OTLPUsername         string
+	OTLPPassword         string
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func (c *Config) RegisterFlags(f *flag.FlagSet) {
-	f.StringVar(&c.ServerAddress, "server-address", "0.0.0.0", "The network address listening for HTTP requests.")
-	f.IntVar(&c.ServerPort, "server-port", 8080, "The network port listening for HTTP requests.")
 	f.StringVar(&c.StorageAccountURL, "storage-account-url", "", "Azure Blob Storage account URL (e.g. https://myaccount.blob.core.windows.net).")
 	f.StringVar(&c.SubscriptionID, "subscription-id", "", "Azure subscription ID containing the storage account.")
 	f.StringVar(&c.StorageResourceGroup, "storage-resource-group", "", "Resource group of the storage account.")
 	f.StringVar(&c.BlobPathPrefix, "blob-path-prefix", "", "Optional prefix to scope blob listing (e.g. resourceId=SUBSCRIPTIONS/...).")
 	f.DurationVar(&c.PollInterval, "poll-interval", time.Minute, "How frequently to poll for new blobs.")
 	f.StringVar(&c.CheckpointFile, "checkpoint-file", "./checkpoint.json", "Path to the checkpoint file for tracking processed blobs.")
-	f.DurationVar(&c.MaxAge, "max-age", 5*time.Minute, "Maximum age of blobs to process. Blobs older than this are skipped on startup or when the checkpoint is stale.")
+	f.DurationVar(&c.MaxAge, "max-age", 90*time.Minute, "Maximum age of blobs to process. Blobs older than this are skipped on startup or when the checkpoint is stale.")
+	f.StringVar(&c.OTLPEndpoint, "otlp-endpoint", "", "OTLP HTTP endpoint URL (e.g. http://localhost:4318). If empty, uses OTEL_EXPORTER_OTLP_ENDPOINT env var.")
+	f.StringVar(&c.OTLPUsername, "otlp-username", envOrDefault("OTLP_USERNAME", ""), "Username for OTLP basic auth (env: OTLP_USERNAME).")
+	f.StringVar(&c.OTLPPassword, "otlp-password", envOrDefault("OTLP_PASSWORD", ""), "Password for OTLP basic auth (env: OTLP_PASSWORD).")
 }
 
 func main() {
-	var (
-		ctx     = context.Background()
-		reg     = prometheus.NewRegistry()
-		metrics = newMetrics(reg)
-	)
+	ctx := context.Background()
 
 	// Init logger.
 	logger := log.NewLogfmtLogger(log.NewSyncWriter(os.Stdout))
@@ -84,63 +90,59 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Configure Azure client. Fetch storage account keys via ARM (same as az CLI),
-	// then use Shared Key auth for blob access.
+	// Configure Azure blob client.
 	client, err := newBlobClient(ctx, appCfg, logger)
 	if err != nil {
 		level.Error(logger).Log("msg", "failed to create blob client", "err", err)
 		os.Exit(1)
 	}
 
-	// Register golang instrumentation.
-	reg.MustRegister(collectors.NewGoCollector())
-	reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-
-	// Expose metrics over HTTP.
-	go func() {
-		level.Info(logger).Log("msg", fmt.Sprintf("exporter listening on %s:%d", appCfg.ServerAddress, appCfg.ServerPort))
-
-		http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{
-			ErrorLog: &promhttpErrorLogger{logger: logger},
-			Registry: reg,
-			Timeout:  10 * time.Second,
+	// Configure OTLP exporter.
+	var opts []otlpmetrichttp.Option
+	if appCfg.OTLPEndpoint != "" {
+		opts = append(opts, otlpmetrichttp.WithEndpointURL(appCfg.OTLPEndpoint))
+	}
+	if appCfg.OTLPUsername != "" || appCfg.OTLPPassword != "" {
+		encoded := base64.StdEncoding.EncodeToString([]byte(appCfg.OTLPUsername + ":" + appCfg.OTLPPassword))
+		opts = append(opts, otlpmetrichttp.WithHeaders(map[string]string{
+			"Authorization": "Basic " + encoded,
 		}))
+	}
+	exporter, err := otlpmetrichttp.New(ctx, opts...)
+	if err != nil {
+		level.Error(logger).Log("msg", "failed to create OTLP exporter", "err", err)
+		os.Exit(1)
+	}
+	defer exporter.Shutdown(ctx)
 
-		server := &http.Server{
-			Addr:         fmt.Sprintf("%s:%d", appCfg.ServerAddress, appCfg.ServerPort),
-			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
-		}
-		if err := server.ListenAndServe(); err != nil {
-			level.Error(logger).Log("msg", "failed to run HTTP server")
-			os.Exit(1)
-		}
-	}()
+	res := resource.NewSchemaless(
+		attribute.String("service.name", "cosmosdb-diagnostic-exporter"),
+	)
+
+	// Partition mapping is maintained across poll cycles (in memory).
+	mapping := newPartitionMapping()
+
+	level.Info(logger).Log("msg", "exporter started", "poll_interval", appCfg.PollInterval, "max_age", appCfg.MaxAge)
 
 	// Run an initial poll at startup.
-	pollContainers(ctx, client, appCfg, metrics, logger)
+	poll(ctx, client, appCfg, exporter, res, mapping, logger)
 
 	// Periodically poll for new blobs.
-	interval := time.NewTicker(appCfg.PollInterval)
-
-	for {
-		<-interval.C
-		pollContainers(ctx, client, appCfg, metrics, logger)
+	ticker := time.NewTicker(appCfg.PollInterval)
+	for range ticker.C {
+		poll(ctx, client, appCfg, exporter, res, mapping, logger)
 	}
 }
 
-func pollContainers(ctx context.Context, client *azblob.Client, cfg *Config, metrics *Metrics, logger log.Logger) {
+func poll(ctx context.Context, client *azblob.Client, cfg *Config, exporter sdkmetric.Exporter, res *resource.Resource, mapping *partitionMapping, logger log.Logger) {
 	checkpoint, err := loadCheckpoint(cfg.CheckpointFile)
 	if err != nil {
 		level.Error(logger).Log("msg", "failed to load checkpoint", "err", err)
-		metrics.processingErrorsTotal.Inc()
 		return
 	}
 
-	for _, containerName := range containerNames {
-		if err := processContainer(ctx, client, containerName, cfg.BlobPathPrefix, cfg.MaxAge, checkpoint, cfg.CheckpointFile, metrics, logger); err != nil {
-			level.Error(logger).Log("msg", "failed to process container", "container", containerName, "err", err)
-		}
+	if err := processMinutes(ctx, client, cfg.BlobPathPrefix, cfg.MaxAge, checkpoint, cfg.CheckpointFile, exporter, res, mapping, logger); err != nil {
+		level.Error(logger).Log("msg", "failed to process minutes", "err", err)
 	}
 }
 
@@ -181,12 +183,4 @@ func newBlobClient(ctx context.Context, cfg *Config, logger log.Logger) (*azblob
 	}
 
 	return azblob.NewClientWithSharedKeyCredential(cfg.StorageAccountURL, sharedKey, nil)
-}
-
-type promhttpErrorLogger struct {
-	logger log.Logger
-}
-
-func (l *promhttpErrorLogger) Println(v ...interface{}) {
-	level.Error(l.logger).Log(v...)
 }
