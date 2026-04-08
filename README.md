@@ -16,8 +16,9 @@ Polls Azure Blob Storage for CosmosDB diagnostic logs and exports metrics via OT
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-storage-account-url` | (required) | Azure Blob Storage account URL |
-| `-subscription-id` | (required) | Azure subscription ID |
-| `-storage-resource-group` | (required) | Resource group of the storage account |
+| `-storage-account-key` | `""` | Azure storage account key. If set, skips ARM key lookup (env: `AZURE_STORAGE_KEY`) |
+| `-subscription-id` | (required*) | Azure subscription ID (*not required when `-storage-account-key` is set) |
+| `-storage-resource-group` | (required*) | Resource group of the storage account (*not required when `-storage-account-key` is set) |
 | `-blob-path-prefix` | `""` | Prefix to scope blob listing (e.g. `resourceId=SUBSCRIPTIONS/...`) |
 | `-poll-interval` | `1m` | How frequently to poll for new blobs |
 | `-checkpoint-file` | `./checkpoint.json` | Path to the checkpoint file |
