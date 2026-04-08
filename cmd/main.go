@@ -29,6 +29,7 @@ var containerNames = []string{
 
 type Config struct {
 	StorageAccountURL    string
+	StorageAccountKey    string
 	SubscriptionID       string
 	StorageResourceGroup string
 	BlobPathPrefix       string
@@ -50,6 +51,7 @@ func envOrDefault(key, fallback string) string {
 
 func (c *Config) RegisterFlags(f *flag.FlagSet) {
 	f.StringVar(&c.StorageAccountURL, "storage-account-url", "", "Azure Blob Storage account URL (e.g. https://myaccount.blob.core.windows.net).")
+	f.StringVar(&c.StorageAccountKey, "storage-account-key", envOrDefault("AZURE_STORAGE_KEY", ""), "Azure storage account key. If set, skips ARM key lookup (env: AZURE_STORAGE_KEY).")
 	f.StringVar(&c.SubscriptionID, "subscription-id", "", "Azure subscription ID containing the storage account.")
 	f.StringVar(&c.StorageResourceGroup, "storage-resource-group", "", "Resource group of the storage account.")
 	f.StringVar(&c.BlobPathPrefix, "blob-path-prefix", "", "Optional prefix to scope blob listing (e.g. resourceId=SUBSCRIPTIONS/...).")
@@ -81,13 +83,15 @@ func main() {
 		level.Error(logger).Log("msg", "-storage-account-url is required")
 		os.Exit(1)
 	}
-	if appCfg.SubscriptionID == "" {
-		level.Error(logger).Log("msg", "-subscription-id is required")
-		os.Exit(1)
-	}
-	if appCfg.StorageResourceGroup == "" {
-		level.Error(logger).Log("msg", "-storage-resource-group is required")
-		os.Exit(1)
+	if appCfg.StorageAccountKey == "" {
+		if appCfg.SubscriptionID == "" {
+			level.Error(logger).Log("msg", "-subscription-id is required when -storage-account-key is not set")
+			os.Exit(1)
+		}
+		if appCfg.StorageResourceGroup == "" {
+			level.Error(logger).Log("msg", "-storage-resource-group is required when -storage-account-key is not set")
+			os.Exit(1)
+		}
 	}
 	if appCfg.Cluster == "" {
 		level.Error(logger).Log("msg", "-cluster is required")
@@ -150,14 +154,10 @@ func poll(ctx context.Context, client *azblob.Client, cfg *Config, exporter sdkm
 	}
 }
 
-// newBlobClient fetches the storage account key via the ARM API (like az CLI does)
-// and returns a blob client using Shared Key authentication.
+// newBlobClient returns a blob client using Shared Key authentication.
+// If a storage account key is provided directly, it uses that. Otherwise, it
+// fetches the key via the ARM API using DefaultAzureCredential.
 func newBlobClient(ctx context.Context, cfg *Config, logger log.Logger) (*azblob.Client, error) {
-	cred, err := azidentity.NewDefaultAzureCredential(nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating Azure credential: %w", err)
-	}
-
 	// Extract account name from URL (e.g. "myaccount" from "https://myaccount.blob.core.windows.net").
 	parsed, err := url.Parse(cfg.StorageAccountURL)
 	if err != nil {
@@ -165,26 +165,45 @@ func newBlobClient(ctx context.Context, cfg *Config, logger log.Logger) (*azblob
 	}
 	accountName := strings.Split(parsed.Hostname(), ".")[0]
 
-	// Fetch storage account keys via ARM.
-	accountsClient, err := armstorage.NewAccountsClient(cfg.SubscriptionID, cred, nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating ARM storage client: %w", err)
+	var key string
+	if cfg.StorageAccountKey != "" {
+		key = cfg.StorageAccountKey
+		level.Info(logger).Log("msg", "using provided storage account key", "account", accountName)
+	} else {
+		var err error
+		key, err = fetchStorageKeyViaARM(ctx, cfg, accountName)
+		if err != nil {
+			return nil, err
+		}
+		level.Info(logger).Log("msg", "fetched storage account key via ARM", "account", accountName)
 	}
 
-	keys, err := accountsClient.ListKeys(ctx, cfg.StorageResourceGroup, accountName, nil)
-	if err != nil {
-		return nil, fmt.Errorf("listing storage account keys: %w", err)
-	}
-	if len(keys.Keys) == 0 || keys.Keys[0].Value == nil {
-		return nil, fmt.Errorf("no storage account keys found")
-	}
-
-	level.Info(logger).Log("msg", "fetched storage account key via ARM", "account", accountName)
-
-	sharedKey, err := azblob.NewSharedKeyCredential(accountName, *keys.Keys[0].Value)
+	sharedKey, err := azblob.NewSharedKeyCredential(accountName, key)
 	if err != nil {
 		return nil, fmt.Errorf("creating shared key credential: %w", err)
 	}
 
 	return azblob.NewClientWithSharedKeyCredential(cfg.StorageAccountURL, sharedKey, nil)
+}
+
+func fetchStorageKeyViaARM(ctx context.Context, cfg *Config, accountName string) (string, error) {
+	cred, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		return "", fmt.Errorf("creating Azure credential: %w", err)
+	}
+
+	accountsClient, err := armstorage.NewAccountsClient(cfg.SubscriptionID, cred, nil)
+	if err != nil {
+		return "", fmt.Errorf("creating ARM storage client: %w", err)
+	}
+
+	keys, err := accountsClient.ListKeys(ctx, cfg.StorageResourceGroup, accountName, nil)
+	if err != nil {
+		return "", fmt.Errorf("listing storage account keys: %w", err)
+	}
+	if len(keys.Keys) == 0 || keys.Keys[0].Value == nil {
+		return "", fmt.Errorf("no storage account keys found")
+	}
+
+	return *keys.Keys[0].Value, nil
 }
