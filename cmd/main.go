@@ -149,7 +149,7 @@ func poll(ctx context.Context, client *azblob.Client, cfg *Config, exporter sdkm
 		return
 	}
 
-	if err := processMinutes(ctx, client, cfg.BlobPathPrefix, cfg.MaxAge, checkpoint, cfg.CheckpointFile, exporter, res, mapping, cfg.Cluster, logger); err != nil {
+	if err := processMinutes(ctx, client, cfg.BlobPathPrefix, cfg.MaxAge, checkpoint, cfg.CheckpointFile, exporter, res, mapping, cfg.Cluster, cfg, logger); err != nil {
 		level.Error(logger).Log("msg", "failed to process minutes", "err", err)
 	}
 }

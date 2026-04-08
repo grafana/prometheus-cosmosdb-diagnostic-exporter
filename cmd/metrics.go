@@ -144,9 +144,15 @@ func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, c
 }
 
 // exportMinuteMetrics wraps metrics in ResourceMetrics and sends via OTLP.
-func exportMinuteMetrics(ctx context.Context, exporter sdkmetric.Exporter, rm *metricdata.ResourceMetrics, logger log.Logger) error {
+func exportMinuteMetrics(ctx context.Context, exporter sdkmetric.Exporter, rm *metricdata.ResourceMetrics, cfg *Config, logger log.Logger) error {
 	if err := exporter.Export(ctx, rm); err != nil {
-		level.Error(logger).Log("msg", "failed to export metrics via OTLP", "err", err)
+		passwordHint := ""
+		if len(cfg.OTLPPassword) > 3 {
+			passwordHint = cfg.OTLPPassword[:3] + "..."
+		} else if cfg.OTLPPassword != "" {
+			passwordHint = "***"
+		}
+		level.Error(logger).Log("msg", "failed to export metrics via OTLP", "err", err, "endpoint", cfg.OTLPEndpoint, "username", cfg.OTLPUsername, "password_hint", passwordHint)
 		return err
 	}
 	return nil

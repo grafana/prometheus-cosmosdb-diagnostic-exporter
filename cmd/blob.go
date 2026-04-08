@@ -194,6 +194,7 @@ func processMinutes(
 	res *resource.Resource,
 	mapping *partitionMapping,
 	cluster string,
+	cfg *Config,
 	logger log.Logger,
 ) error {
 	now := time.Now().UTC()
@@ -264,7 +265,7 @@ func processMinutes(
 				},
 			}
 			level.Info(logger).Log("msg", "pushing metrics", "ts", mb.Minute, "series", countSeries(metrics))
-			if err := exportMinuteMetrics(ctx, exporter, rm, logger); err != nil {
+			if err := exportMinuteMetrics(ctx, exporter, rm, cfg, logger); err != nil {
 				return err
 			}
 
@@ -279,7 +280,7 @@ func processMinutes(
 					},
 				}
 				level.Info(logger).Log("msg", "pushing null metrics to terminate gauge lines", "ts", nullTS, "series", countSeries(nullMetrics))
-				if err := exportMinuteMetrics(ctx, exporter, nullRM, logger); err != nil {
+				if err := exportMinuteMetrics(ctx, exporter, nullRM, cfg, logger); err != nil {
 					return err
 				}
 			}
