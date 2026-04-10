@@ -25,6 +25,7 @@ type dataPlaneKey struct {
 type dataPlaneAgg struct {
 	Count     int64
 	Durations []float64
+	RUCharge  float64
 }
 
 // buildMinuteMetrics aggregates diagnostic records from a single minute into OTLP metrics.
@@ -59,15 +60,19 @@ func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, c
 			if dur := getFloat64Prop(p, "duration"); dur >= 0 {
 				agg.Durations = append(agg.Durations, dur/1000) // ms → seconds
 			}
+			if ru := getFloat64Prop(p, "requestCharge"); ru >= 0 {
+				agg.RUCharge += ru
+			}
 		}
 	}
 
 	var metrics []metricdata.Metrics
 
-	// DataPlaneRequests: request count + duration percentiles.
+	// DataPlaneRequests: request count + duration percentiles + RU charge.
 	if len(dpAgg) > 0 {
 		var countPoints []metricdata.DataPoint[float64]
 		var durationPoints []metricdata.DataPoint[float64]
+		var ruPoints []metricdata.DataPoint[float64]
 
 		for key, agg := range dpAgg {
 			baseAttrs := []attribute.KeyValue{
@@ -84,6 +89,13 @@ func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, c
 				StartTime:  ts,
 				Time:       ts,
 				Value:      float64(agg.Count),
+			})
+
+			ruPoints = append(ruPoints, metricdata.DataPoint[float64]{
+				Attributes: attribute.NewSet(baseAttrs...),
+				StartTime:  ts,
+				Time:       ts,
+				Value:      agg.RUCharge,
 			})
 
 			// Duration: avg + percentiles + max.
@@ -135,6 +147,16 @@ func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, c
 				Description: "Duration quantiles of CosmosDB data plane requests.",
 				Data: metricdata.Gauge[float64]{
 					DataPoints: durationPoints,
+				},
+			})
+		}
+
+		if len(ruPoints) > 0 {
+			metrics = append(metrics, metricdata.Metrics{
+				Name:        "cosmosdb_data_plane_request_charge_ru_1m",
+				Description: "RU consumed by CosmosDB data plane requests per minute.",
+				Data: metricdata.Gauge[float64]{
+					DataPoints: ruPoints,
 				},
 			})
 		}

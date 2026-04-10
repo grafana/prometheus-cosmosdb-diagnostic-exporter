@@ -29,31 +29,13 @@ Polls Azure Blob Storage for CosmosDB diagnostic logs and exports metrics via OT
 
 ## Metrics
 
-### DataPlaneRequests
+All metrics include the labels `cluster`, `account_name`, `database`, `collection`, `operation`, `status_code`, and `partition_key_range_id`.
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `cosmosdb_data_plane_requests_1m` | Gauge | `database`, `collection`, `operation`, `status_code`, `partition_key_range_id` | Request count per minute |
-| `cosmosdb_data_plane_request_duration_seconds` | Gauge | `database`, `collection`, `operation`, `status_code`, `partition_key_range_id`, `quantile` | Duration quantiles (`avg`, `0.5`, `0.75`, `0.95`, `0.99`, `1`) |
-| `cosmosdb_data_plane_request_charge_ru_1m` | Gauge | `database`, `collection`, `operation` | RU consumed per minute |
-
-### PartitionKeyRUConsumption
-
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `cosmosdb_partition_key_ru_consumption_ru_1m` | Gauge | `database`, `collection`, `partition_key_range_id` | RU consumed per partition key range per minute |
-
-### PartitionKeyStatistics
-
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `cosmosdb_partition_key_size_bytes` | Gauge | `database`, `collection`, `partition_key` | Partition key size in bytes |
-
-### QueryRuntimeStatistics
-
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `cosmosdb_query_runtime_statistics_1m` | Gauge | `database`, `collection` | Query statistics records per minute |
+| Metric | Type | Extra Labels | Description |
+|--------|------|--------------|-------------|
+| `cosmosdb_data_plane_requests_1m` | Gauge | | Request count per minute |
+| `cosmosdb_data_plane_request_duration_seconds` | Gauge | `quantile` | Duration quantiles (`avg`, `0.5`, `0.75`, `0.95`, `0.99`, `1`) |
+| `cosmosdb_data_plane_request_charge_ru_1m` | Gauge | | RU consumed per minute |
 
 ## Partition mapping
 
