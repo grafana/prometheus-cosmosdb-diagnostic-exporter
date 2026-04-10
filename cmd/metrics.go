@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"math"
 	"slices"
 	"time"
 
@@ -194,35 +193,6 @@ func countSeries(metrics []metricdata.Metrics) int {
 		}
 	}
 	return n
-}
-
-// buildNullMetrics creates a copy of the given metrics with all gauge values
-// set to NaN at the given timestamp. This causes the series to show as "no data"
-// instead of a flat line extending from the last real point.
-func buildNullMetrics(metrics []metricdata.Metrics, ts time.Time) []metricdata.Metrics {
-	var result []metricdata.Metrics
-	for _, m := range metrics {
-		switch d := m.Data.(type) {
-		case metricdata.Gauge[float64]:
-			nullPoints := make([]metricdata.DataPoint[float64], len(d.DataPoints))
-			for i, dp := range d.DataPoints {
-				nullPoints[i] = metricdata.DataPoint[float64]{
-					Attributes: dp.Attributes,
-					StartTime:  ts,
-					Time:       ts,
-					Value:      math.NaN(),
-				}
-			}
-			result = append(result, metricdata.Metrics{
-				Name:        m.Name,
-				Description: m.Description,
-				Data: metricdata.Gauge[float64]{
-					DataPoints: nullPoints,
-				},
-			})
-		}
-	}
-	return result
 }
 
 // computePercentile returns the p-th percentile from a sorted slice.

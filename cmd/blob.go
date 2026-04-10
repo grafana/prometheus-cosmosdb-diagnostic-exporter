@@ -273,22 +273,6 @@ func processMinutes(
 			if err := exportMinuteMetrics(ctx, exporter, rm, cfg, logger); err != nil {
 				return err
 			}
-
-			// Push NaN points 30s after the real data to terminate gauge lines.
-			nullTS := mb.Minute.Add(30 * time.Second)
-			nullMetrics := buildNullMetrics(metrics, nullTS)
-			if len(nullMetrics) > 0 {
-				nullRM := &metricdata.ResourceMetrics{
-					Resource: res,
-					ScopeMetrics: []metricdata.ScopeMetrics{
-						{Metrics: nullMetrics},
-					},
-				}
-				level.Info(logger).Log("msg", "pushing null metrics to terminate gauge lines", "ts", nullTS, "series", countSeries(nullMetrics))
-				if err := exportMinuteMetrics(ctx, exporter, nullRM, cfg, logger); err != nil {
-					return err
-				}
-			}
 		}
 
 		// Update checkpoints for all blobs processed in this minute.
