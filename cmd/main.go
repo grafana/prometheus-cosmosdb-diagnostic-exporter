@@ -25,6 +25,7 @@ import (
 var containerNames = []string{
 	"insights-logs-dataplanerequests",
 	"insights-logs-partitionkeyruconsumption",
+	"insights-logs-queryruntimestatistics",
 }
 
 type Config struct {
@@ -129,27 +130,28 @@ func main() {
 
 	// Partition mapping is maintained across poll cycles (in memory).
 	mapping := newPartitionMapping()
+	tracker := newTopNTracker()
 
 	level.Info(logger).Log("msg", "exporter started", "poll_interval", appCfg.PollInterval, "max_age", appCfg.MaxAge)
 
 	// Run an initial poll at startup.
-	poll(ctx, client, appCfg, exporter, res, mapping, logger)
+	poll(ctx, client, appCfg, exporter, res, mapping, tracker, logger)
 
 	// Periodically poll for new blobs.
 	ticker := time.NewTicker(appCfg.PollInterval)
 	for range ticker.C {
-		poll(ctx, client, appCfg, exporter, res, mapping, logger)
+		poll(ctx, client, appCfg, exporter, res, mapping, tracker, logger)
 	}
 }
 
-func poll(ctx context.Context, client *azblob.Client, cfg *Config, exporter sdkmetric.Exporter, res *resource.Resource, mapping *partitionMapping, logger log.Logger) {
+func poll(ctx context.Context, client *azblob.Client, cfg *Config, exporter sdkmetric.Exporter, res *resource.Resource, mapping *partitionMapping, tracker *topNTracker, logger log.Logger) {
 	checkpoint, err := loadCheckpoint(cfg.CheckpointFile)
 	if err != nil {
 		level.Error(logger).Log("msg", "failed to load checkpoint", "err", err)
 		return
 	}
 
-	if err := processMinutes(ctx, client, cfg.BlobPathPrefix, cfg.MaxAge, checkpoint, cfg.CheckpointFile, exporter, res, mapping, cfg.Cluster, cfg, logger); err != nil {
+	if err := processMinutes(ctx, client, cfg.BlobPathPrefix, cfg.MaxAge, checkpoint, cfg.CheckpointFile, exporter, res, mapping, tracker, cfg.Cluster, cfg, logger); err != nil {
 		level.Error(logger).Log("msg", "failed to process minutes", "err", err)
 	}
 }

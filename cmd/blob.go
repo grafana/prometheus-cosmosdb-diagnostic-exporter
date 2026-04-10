@@ -193,6 +193,7 @@ func processMinutes(
 	exporter sdkmetric.Exporter,
 	res *resource.Resource,
 	mapping *partitionMapping,
+	tracker *topNTracker,
 	cluster string,
 	cfg *Config,
 	logger log.Logger,
@@ -253,6 +254,10 @@ func processMinutes(
 				allRecords = append(allRecords, records...)
 			}
 		}
+
+		// Feed the top-N tracker with DataPlaneRequests and QueryRuntimeStatistics.
+		tracker.feedMinuteRecords(allRecords, mapping)
+		tracker.emitIfDue(logger)
 
 		// Build and export OTLP metrics.
 		level.Info(logger).Log("msg", "processing minute", "ts", mb.Minute, "records", len(allRecords))

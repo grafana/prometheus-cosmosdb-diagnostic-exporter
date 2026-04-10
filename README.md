@@ -4,12 +4,13 @@ Polls Azure Blob Storage for CosmosDB diagnostic logs and exports metrics via OT
 
 ## How it works
 
-1. Lists diagnostic log blobs across all Azure containers
+1. Lists diagnostic log blobs across all Azure containers (`DataPlaneRequests`, `PartitionKeyRUConsumption`, `QueryRuntimeStatistics`)
 2. Groups blobs by minute, excludes the latest minute
 3. Builds a partition mapping from `PartitionKeyRUConsumption` data
 4. Enriches `DataPlaneRequests` with `partition_key_range_id` using the mapping
 5. Aggregates records into per-minute OTLP metrics and exports them
-6. Saves progress to a checkpoint file to resume on restart
+6. Tracks the top 5 slowest requests, top 5 costliest requests (per collection/operation), and top 5 costliest queries — logs them hourly
+7. Saves progress to a checkpoint file to resume on restart
 
 ## Configuration
 
@@ -36,6 +37,16 @@ All metrics include the labels `cluster`, `account_name`, `database`, `collectio
 | `cosmosdb_data_plane_requests_1m` | Gauge | | Request count per minute |
 | `cosmosdb_data_plane_request_duration_seconds` | Gauge | `quantile` | Duration quantiles (`avg`, `0.5`, `0.75`, `0.95`, `0.99`, `1`) |
 | `cosmosdb_data_plane_request_charge_ru_1m` | Gauge | | RU consumed per minute |
+
+## Hourly top-N logging
+
+Every hour, the exporter logs the top 5 slowest and top 5 most expensive (by RU) individual requests per `(collection, operation)` pair, plus the top 5 most expensive SQL queries globally. These are collected incrementally during normal processing (no extra cost) and emitted as logfmt lines.
+
+**Request log fields**: `collection`, `operation`, `rank`, `activity_id`, `status_code`, `duration_sec`, `ru_charge`, `partition_key_range_id`, `document`
+
+**Query log fields**: `collection`, `rank`, `activity_id`, `duration_sec`, `ru_charge`, `partition_key_range_id`, `rows_returned`, `query`
+
+Query tracking joins `QueryRuntimeStatistics` records to `DataPlaneRequests` via `activityId` to obtain RU and duration.
 
 ## Partition mapping
 
