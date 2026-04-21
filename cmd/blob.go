@@ -192,7 +192,6 @@ func processMinutes(
 	checkpointFile string,
 	exporter sdkmetric.Exporter,
 	res *resource.Resource,
-	mapping *partitionMapping,
 	tracker *topNTracker,
 	cluster string,
 	cfg *Config,
@@ -226,6 +225,10 @@ func processMinutes(
 
 	// Phase 3: Process each minute.
 	for _, mb := range minutes {
+		// Fresh mapping per minute: entries are only used to resolve resource IDs
+		// within the same minute, and keeping it process-wide would leak memory
+		// as partition keys accumulate.
+		mapping := newPartitionMapping()
 		var allRecords []DiagnosticRecord
 
 		// Download PartitionKeyRUConsumption first to build the mapping.
