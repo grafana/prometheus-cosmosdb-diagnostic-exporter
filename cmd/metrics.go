@@ -28,10 +28,9 @@ type dataPlaneAgg struct {
 }
 
 // buildMinuteMetrics aggregates diagnostic records from a single minute into OTLP metrics.
-// The partition lookup joins DataPlaneRequests to PartitionKeyRUConsumption via activityId
-// to resolve partition_key_range_id.
+// The partition mapping is used to resolve partition_key_range_id for DataPlaneRequests.
 // The timestamp ts should be at :00 seconds of the minute.
-func buildMinuteMetrics(records []DiagnosticRecord, lookup *partitionLookup, cluster string, ts time.Time) []metricdata.Metrics {
+func buildMinuteMetrics(records []DiagnosticRecord, mapping *partitionMapping, cluster string, ts time.Time) []metricdata.Metrics {
 	dpAgg := map[dataPlaneKey]*dataPlaneAgg{}
 
 	for i := range records {
@@ -40,8 +39,8 @@ func buildMinuteMetrics(records []DiagnosticRecord, lookup *partitionLookup, clu
 		case "DataPlaneRequests":
 			p := r.Properties
 			rangeID := ""
-			if lookup != nil {
-				rangeID = lookup.lookup(getStringProp(p, "activityId"))
+			if mapping != nil {
+				rangeID = mapping.resolve(getStringProp(p, "requestResourceId"))
 			}
 			key := dataPlaneKey{
 				AccountName:         extractAccountName(r.ResourceID),

@@ -6,8 +6,8 @@ Polls Azure Blob Storage for CosmosDB diagnostic logs and exports metrics via OT
 
 1. Lists diagnostic log blobs across all Azure containers (`DataPlaneRequests`, `PartitionKeyRUConsumption`, `QueryRuntimeStatistics`)
 2. Groups blobs by minute, excludes the latest minute
-3. Builds an `activityId → partition_key_range_id` lookup from `PartitionKeyRUConsumption` data
-4. Enriches `DataPlaneRequests` with `partition_key_range_id` by joining on `activityId`
+3. Builds a partition mapping from `PartitionKeyRUConsumption` data
+4. Enriches `DataPlaneRequests` with `partition_key_range_id` using the mapping
 5. Aggregates records into per-minute OTLP metrics and exports them
 6. Tracks the top 5 slowest requests, top 5 costliest requests (per collection/operation), and top 5 costliest queries — logs them hourly
 7. Saves progress to a checkpoint file to resume on restart
@@ -48,12 +48,14 @@ Every hour, the exporter logs the top 5 slowest and top 5 most expensive (by RU)
 
 Query tracking joins `QueryRuntimeStatistics` records to `DataPlaneRequests` via `activityId` to obtain RU and duration.
 
-## Partition attribution
+## Partition mapping
 
-For each minute, the exporter builds an `activityId → partition_key_range_id` lookup from `PartitionKeyRUConsumption` records. DataPlaneRequests are then joined on `activityId` to populate the `partition_key_range_id` label.
+The exporter resolves `partition_key_range_id` for DataPlaneRequests by joining with PartitionKeyRUConsumption data:
 
-- If the same `activityId` appears on multiple `PartitionKeyRUConsumption` records that disagree on range (e.g. cross-partition queries), the label is cleared to avoid emitting ambiguous attribution.
-- If no `PartitionKeyRUConsumption` record matches the DataPlaneRequest's `activityId`, the label is empty.
+- **Exact match**: the document ID extracted from `requestResourceId` matches a partition key directly (e.g. chunks collection)
+- **Numeric suffix match**: for numeric document IDs, `doc_id / 100000` is matched against the numeric suffix of partition keys (e.g. logs collection)
+
+When the mapping cannot be resolved, `partition_key_range_id` is empty.
 
 ## Running locally
 

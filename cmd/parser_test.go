@@ -13,16 +13,14 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-const dataPlaneRequestsFixture = `{ "time": "2026-04-02T16:38:34Z", "resourceId": "/SUBSCRIPTIONS/00000000/RESOURCEGROUPS/MY-RG/PROVIDERS/MICROSOFT.DOCUMENTDB/DATABASEACCOUNTS/MY-ACCOUNT", "category": "DataPlaneRequests", "operationName": "Read", "properties": {"activityId": "act-200","statusCode": "200","duration": "2.222700","requestCharge": "2.000000","databaseName": "mydb","collectionName": "dynamo_adapter","requestResourceId": "/dbs/mydb/colls/dynamo_adapter/docs/my_record"}}
-{ "time": "2026-04-02T16:38:38Z", "resourceId": "/SUBSCRIPTIONS/00000000/RESOURCEGROUPS/MY-RG/PROVIDERS/MICROSOFT.DOCUMENTDB/DATABASEACCOUNTS/MY-ACCOUNT", "category": "DataPlaneRequests", "operationName": "Read", "properties": {"activityId": "act-404","statusCode": "404","duration": "2.213000","requestCharge": "2.000000","databaseName": "mydb","collectionName": "table","requestResourceId": "/dbs/mydb/colls/table/docs/000000000000000000000478401387"}}
-{ "time": "2026-04-02T16:38:51Z", "resourceId": "/SUBSCRIPTIONS/00000000/RESOURCEGROUPS/MY-RG/PROVIDERS/MICROSOFT.DOCUMENTDB/DATABASEACCOUNTS/MY-ACCOUNT", "category": "DataPlaneRequests", "operationName": "Create", "properties": {"activityId": "act-snap","statusCode": "200","duration": "2.508000","requestCharge": "5.950000","databaseName": "mydb","collectionName": "snapshots","requestResourceId": "/dbs/mydb/colls/snapshots/docs"}}
-{ "time": "2026-04-02T16:38:56Z", "resourceId": "/SUBSCRIPTIONS/00000000/RESOURCEGROUPS/MY-RG/PROVIDERS/MICROSOFT.DOCUMENTDB/DATABASEACCOUNTS/MY-ACCOUNT", "category": "DataPlaneRequests", "operationName": "Create", "properties": {"activityId": "act-chunk","statusCode": "201","duration": "7.341900","requestCharge": "5.900000","databaseName": "mydb","collectionName": "table_chunks","requestResourceId": "/dbs/mydb/colls/table_chunks/docs"}}`
+const dataPlaneRequestsFixture = `{ "time": "2026-04-02T16:38:34Z", "resourceId": "/SUBSCRIPTIONS/00000000/RESOURCEGROUPS/MY-RG/PROVIDERS/MICROSOFT.DOCUMENTDB/DATABASEACCOUNTS/MY-ACCOUNT", "category": "DataPlaneRequests", "operationName": "Read", "properties": {"statusCode": "200","duration": "2.222700","requestCharge": "2.000000","databaseName": "mydb","collectionName": "dynamo_adapter","requestResourceId": "/dbs/mydb/colls/dynamo_adapter/docs/my_record"}}
+{ "time": "2026-04-02T16:38:38Z", "resourceId": "/SUBSCRIPTIONS/00000000/RESOURCEGROUPS/MY-RG/PROVIDERS/MICROSOFT.DOCUMENTDB/DATABASEACCOUNTS/MY-ACCOUNT", "category": "DataPlaneRequests", "operationName": "Read", "properties": {"statusCode": "404","duration": "2.213000","requestCharge": "2.000000","databaseName": "mydb","collectionName": "table","requestResourceId": "/dbs/mydb/colls/table/docs/000000000000000000000478401387"}}
+{ "time": "2026-04-02T16:38:51Z", "resourceId": "/SUBSCRIPTIONS/00000000/RESOURCEGROUPS/MY-RG/PROVIDERS/MICROSOFT.DOCUMENTDB/DATABASEACCOUNTS/MY-ACCOUNT", "category": "DataPlaneRequests", "operationName": "Create", "properties": {"statusCode": "200","duration": "2.508000","requestCharge": "5.950000","databaseName": "mydb","collectionName": "snapshots","requestResourceId": "/dbs/mydb/colls/snapshots/docs"}}
+{ "time": "2026-04-02T16:38:56Z", "resourceId": "/SUBSCRIPTIONS/00000000/RESOURCEGROUPS/MY-RG/PROVIDERS/MICROSOFT.DOCUMENTDB/DATABASEACCOUNTS/MY-ACCOUNT", "category": "DataPlaneRequests", "operationName": "Create", "properties": {"statusCode": "201","duration": "7.341900","requestCharge": "5.900000","databaseName": "mydb","collectionName": "table_chunks","requestResourceId": "/dbs/mydb/colls/table_chunks/docs"}}`
 
-// PKRU records carry activityId at the top level; the second record shares the
-// activityId "act-404" with the 404 DataPlaneRequest in dataPlaneRequestsFixture.
-const partitionKeyRUConsumptionFixture = `{ "time": "2026-04-02T16:52:00Z", "activityId": "act-other", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"mydb","collectionName":"table","partitionKeyRangeId":"1","requestCharge":"1.000000","partitionKey":"[\"prefix_abc_4784\"]"}}
-{ "time": "2026-04-02T16:52:00Z", "activityId": "act-404", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"mydb","collectionName":"table","partitionKeyRangeId":"1","requestCharge":"3.500000","partitionKey":"[\"prefix_abc_4784\"]"}}
-{ "time": "2026-04-02T16:52:00Z", "activityId": "act-3", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"mydb","collectionName":"table","partitionKeyRangeId":"2","requestCharge":"2.000000","partitionKey":"[\"prefix_abc_4785\"]"}}`
+const partitionKeyRUConsumptionFixture = `{ "time": "2026-04-02T16:52:00Z", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"mydb","collectionName":"table","partitionKeyRangeId":"1","requestCharge":"1.000000","partitionKey":"[\"partition_abc_4784\"]"}}
+{ "time": "2026-04-02T16:52:00Z", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"mydb","collectionName":"table","partitionKeyRangeId":"1","requestCharge":"3.500000","partitionKey":"[\"partition_abc_4784\"]"}}
+{ "time": "2026-04-02T16:52:00Z", "category": "PartitionKeyRUConsumption", "properties": {"databaseName":"mydb","collectionName":"table","partitionKeyRangeId":"2","requestCharge":"2.000000","partitionKey":"[\"partition_abc_4785\"]"}}`
 
 var testTimestamp = time.Date(2026, 4, 2, 16, 38, 0, 0, time.UTC)
 
@@ -66,34 +64,34 @@ func TestBuildMinuteMetrics_DataPlaneRequests(t *testing.T) {
 
 }
 
-func TestBuildMinuteMetrics_WithPartitionLookup(t *testing.T) {
-	// Build lookup from PKRU records, then verify DPR records get enriched
-	// with partition_key_range_id via activityId join.
+func TestBuildMinuteMetrics_WithPartitionMapping(t *testing.T) {
+	// Build mapping from PKRU records, then verify DPR records get enriched.
 	pkruRecords := parseRecords(t, partitionKeyRUConsumptionFixture)
-	lookup := newPartitionLookup()
-	lookup.update(pkruRecords)
+	mapping := newPartitionMapping()
+	mapping.update(pkruRecords)
 
 	dprRecords := parseRecords(t, dataPlaneRequestsFixture)
-	metrics := buildMinuteMetrics(dprRecords, lookup, "test-cluster", testTimestamp)
+	metrics := buildMinuteMetrics(dprRecords, mapping, "test-cluster", testTimestamp)
 
 	countMetric := findOTLPMetric(metrics, "cosmosdb_data_plane_requests_1m")
 	require.NotNil(t, countMetric)
 	sum := countMetric.Data.(metricdata.Gauge[float64])
 
-	// The Read/404 DPR (activityId=act-404) joins to the PKRU record with range "1".
+	// The Read/404 record has requestResourceId ending with doc_id=000000000000000000000478401387.
+	// 478401387 / 100000 = 4784 → matches partition key "partition_abc_4784" → range "1".
 	dp := findFloat64DataPoint(sum.DataPoints, map[string]string{
 		"cluster": "test-cluster", "account_name": "my-account", "database": "mydb", "collection": "table", "operation": "Read",
 		"status_code": "404", "partition_key_range_id": "1",
 	})
-	require.NotNil(t, dp, "should resolve rangeID via activityId join")
+	require.NotNil(t, dp, "should resolve numeric doc_id to partition via suffix mapping")
 	assert.Equal(t, 1.0, dp.Value)
 
-	// DPRs with no matching PKRU record get empty range.
+	// Create operations have requestResourceId ending in /docs (no doc_id) → empty partition.
 	dp2 := findFloat64DataPoint(sum.DataPoints, map[string]string{
 		"cluster": "test-cluster", "account_name": "my-account", "database": "mydb", "collection": "table_chunks", "operation": "Create",
 		"status_code": "201", "partition_key_range_id": "",
 	})
-	require.NotNil(t, dp2, "DPRs without a PKRU match should have empty partition_key_range_id")
+	require.NotNil(t, dp2, "Create ops without doc_id should have empty partition_key_range_id")
 }
 
 func TestBuildMinuteMetrics_UnknownCategory(t *testing.T) {

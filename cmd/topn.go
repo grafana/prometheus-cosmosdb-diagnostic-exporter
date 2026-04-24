@@ -123,7 +123,7 @@ func (t *topNTracker) observeQuery(q trackedQuery) {
 
 // feedMinuteRecords processes a minute's worth of records, joining QueryRuntimeStatistics
 // to DataPlaneRequests via activityId to get RU and duration for queries.
-func (t *topNTracker) feedMinuteRecords(records []DiagnosticRecord, lookup *partitionLookup) {
+func (t *topNTracker) feedMinuteRecords(records []DiagnosticRecord, mapping *partitionMapping) {
 	// Index DataPlaneRequests by activityId for query joining.
 	type dpInfo struct {
 		RUCharge    float64
@@ -147,12 +147,12 @@ func (t *topNTracker) feedMinuteRecords(records []DiagnosticRecord, lookup *part
 		}
 		durSec := dur / 1000
 
-		activityID := getStringProp(p, "activityId")
 		rangeID := ""
-		if lookup != nil {
-			rangeID = lookup.lookup(activityID)
+		if mapping != nil {
+			rangeID = mapping.resolve(getStringProp(p, "requestResourceId"))
 		}
 
+		activityID := getStringProp(p, "activityId")
 		if activityID != "" {
 			dpByActivity[activityID] = dpInfo{RUCharge: ru, DurationSec: durSec}
 		}

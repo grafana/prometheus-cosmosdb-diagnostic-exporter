@@ -181,7 +181,7 @@ func downloadBlobWithRetry(ctx context.Context, client *azblob.Client, container
 }
 
 // processMinutes lists new blobs across all containers, groups them by minute,
-// and processes each minute: builds the partition lookup from PartitionKeyRUConsumption,
+// and processes each minute: builds the partition mapping from PartitionKeyRUConsumption,
 // then aggregates all records into OTLP metrics and exports them.
 func processMinutes(
 	ctx context.Context,
@@ -225,13 +225,13 @@ func processMinutes(
 
 	// Phase 3: Process each minute.
 	for _, mb := range minutes {
-		// Fresh lookup per minute: entries are only used to join activityIds
+		// Fresh mapping per minute: entries are only used to resolve resource IDs
 		// within the same minute, and keeping it process-wide would leak memory
-		// as activity IDs accumulate.
-		lookup := newPartitionLookup()
+		// as partition keys accumulate.
+		mapping := newPartitionMapping()
 		var allRecords []DiagnosticRecord
 
-		// Download PartitionKeyRUConsumption first to build the lookup.
+		// Download PartitionKeyRUConsumption first to build the mapping.
 		pkruContainer := "insights-logs-partitionkeyruconsumption"
 		for _, blobName := range mb.Blobs[pkruContainer] {
 			records, err := downloadBlob(ctx, client, pkruContainer, blobName, logger)
@@ -239,7 +239,7 @@ func processMinutes(
 				level.Error(logger).Log("msg", "failed to download blob", "container", pkruContainer, "blob", blobName, "err", err)
 				return err
 			}
-			lookup.update(records)
+			mapping.update(records)
 			allRecords = append(allRecords, records...)
 		}
 
@@ -259,12 +259,12 @@ func processMinutes(
 		}
 
 		// Feed the top-N tracker with DataPlaneRequests and QueryRuntimeStatistics.
-		tracker.feedMinuteRecords(allRecords, lookup)
+		tracker.feedMinuteRecords(allRecords, mapping)
 		tracker.emitIfDue(logger)
 
 		// Build and export OTLP metrics.
 		level.Info(logger).Log("msg", "processing minute", "ts", mb.Minute, "records", len(allRecords))
-		metrics := buildMinuteMetrics(allRecords, lookup, cluster, mb.Minute)
+		metrics := buildMinuteMetrics(allRecords, mapping, cluster, mb.Minute)
 		if len(metrics) > 0 {
 			rm := &metricdata.ResourceMetrics{
 				Resource: res,
