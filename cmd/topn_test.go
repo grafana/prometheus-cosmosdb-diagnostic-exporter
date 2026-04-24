@@ -107,10 +107,10 @@ func TestObserveQuery_KeepsTopNByRU(t *testing.T) {
 
 func TestFeedMinuteRecords(t *testing.T) {
 	records := parseRecords(t, dataPlaneRequestsFixture)
-	mapping := newPartitionMapping()
+	lookup := newPartitionLookup()
 
 	tracker := newTopNTracker()
-	tracker.feedMinuteRecords(records, mapping)
+	tracker.feedMinuteRecords(records, lookup)
 
 	// 4 records across 4 unique (collection, operation) pairs.
 	assert.Len(t, tracker.byCollectionOp, 4)

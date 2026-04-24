@@ -10,9 +10,20 @@ import (
 type DiagnosticRecord struct {
 	Time          string         `json:"time"`
 	ResourceID    string         `json:"resourceId"`
+	ActivityID    string         `json:"activityId"`
 	Category      string         `json:"category"`
 	OperationName string         `json:"operationName"`
 	Properties    map[string]any `json:"properties"`
+}
+
+// recordActivityID returns the record's activity ID from either the top-level
+// field (PartitionKeyRUConsumption) or properties (DataPlaneRequests,
+// QueryRuntimeStatistics).
+func recordActivityID(r *DiagnosticRecord) string {
+	if r.ActivityID != "" {
+		return r.ActivityID
+	}
+	return getStringProp(r.Properties, "activityId")
 }
 
 // extractAccountName extracts the database account name from a resourceId string
