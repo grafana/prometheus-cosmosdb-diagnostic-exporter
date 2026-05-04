@@ -65,3 +65,13 @@ jobs:
         if: github.ref_name == 'main'
         run: |
           echo "**Docker Image:** ${{ steps.set_tag.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Trigger Argo Workflow
+        if: github.ref_name == 'main'
+        # See doc at: https://github.com/grafana/shared-workflows/tree/main/actions/trigger-argo-workflow
+        uses: grafana/shared-workflows/actions/trigger-argo-workflow@8269e9362f30c5458c2cad54510ea74fd053920c # trigger-argo-workflow/v1.3.0
+        with:
+          namespace: warpstream-cd
+          workflow_template: warpstream-cosmosdb-diag-exporter
+          parameters: |
+            dockertag=${{ steps.set_tag.outputs.tag }}
