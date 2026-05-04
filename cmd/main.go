@@ -126,6 +126,7 @@ func main() {
 
 	res := resource.NewSchemaless(
 		attribute.String("service.name", "cosmosdb-diagnostic-exporter"),
+		attribute.String("service.version", Version),
 	)
 
 	tracker := newTopNTracker()
