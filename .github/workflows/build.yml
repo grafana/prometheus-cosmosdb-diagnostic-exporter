@@ -36,10 +36,6 @@ jobs:
       - name: Run tests
         run: go test ./...
 
-      - name: Build binary
-        run: |
-          make build-binary
-
       # Lets us get branch name without bad characters like `/` that aren't allowed in the image tag.
       - name: Inject slug/short variables
         uses: rlespinasse/github-slug-action@e6f261660910b273384c5c42b17a0217881b217a # v5.6.0
@@ -48,6 +44,12 @@ jobs:
         id: set_tag
         run: |
           echo "tag=${{ env.GITHUB_REF_SLUG }}-${{ env.GITHUB_SHA_SHORT }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binary
+        env:
+          VERSION: ${{ env.GITHUB_REF_SLUG }}-${{ env.GITHUB_SHA_SHORT }}
+        run: |
+          make build-binary
 
       - name: Build and push Docker image
         # See doc at: https://github.com/grafana/shared-workflows/tree/main/actions/docker-build-push-image
