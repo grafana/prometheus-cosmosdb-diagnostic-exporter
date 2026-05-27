@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
-	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/storage/armstorage v1.8.1
+	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/storage/armstorage/v4 v4.0.0
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.4
 	github.com/go-kit/log v0.2.1
 	github.com/grafana/dskit v0.0.0-20260402131538-8d0d211734c0
