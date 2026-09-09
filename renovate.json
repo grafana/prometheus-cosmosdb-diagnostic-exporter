@@ -3,5 +3,12 @@
   "extends": [
     "github>grafana/grafana-renovate-config//presets/base",
     "github>grafana/grafana-renovate-config//presets/automerge"
+  ],
+  "packageRules": [
+    {
+      "groupName": "Go dependencies",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["minor", "patch", "digest"]
+    }
   ]
 }
