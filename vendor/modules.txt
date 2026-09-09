@@ -81,8 +81,6 @@ github.com/AzureAD/microsoft-authentication-library-for-go/apps/public
 # github.com/cenkalti/backoff/v5 v5.0.3
 ## explicit; go 1.23
 github.com/cenkalti/backoff/v5
-# github.com/cenkalti/backoff/v7 v7.0.0
-## explicit; go 1.23
 # github.com/cespare/xxhash/v2 v2.3.0
 ## explicit; go 1.11
 github.com/cespare/xxhash/v2
