@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/storage/armstorage"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/storage/armstorage/v4"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
