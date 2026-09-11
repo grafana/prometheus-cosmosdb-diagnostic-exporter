@@ -3,32 +3,9 @@
   "extends": [
     "github>grafana/grafana-renovate-config//presets/base",
     "github>grafana/grafana-renovate-config//presets/automerge",
-    ":enableVulnerabilityAlerts"
+    "github>grafana/grafana-renovate-config//presets/go-only-security-for-indirect"
   ],
   "packageRules": [
-    {
-      "description": "Enable lookups for indirect go.mod dependencies",
-      "enabled": true,
-      "matchDepTypes": ["indirect"],
-      "matchManagers": ["gomod"]
-    },
-    {
-      "description": "Disable non-security updates for indirect go.mod dependencies",
-      "enabled": false,
-      "matchDepTypes": ["indirect"],
-      "matchManagers": ["gomod"],
-      "matchUpdateTypes": [
-        "major",
-        "minor",
-        "patch",
-        "pin",
-        "digest",
-        "pinDigest",
-        "lockFileMaintenance",
-        "rollback",
-        "replacement"
-      ]
-    },
     {
       "groupName": "Go dependencies",
       "matchManagers": ["gomod"],
