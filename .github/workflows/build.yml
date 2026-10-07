@@ -53,7 +53,7 @@ jobs:
 
       - name: Build and push Docker image
         # See doc at: https://github.com/grafana/shared-workflows/tree/main/actions/docker-build-push-image
-        uses: grafana/shared-workflows/actions/docker-build-push-image@2f1ddaf3ce1aa677356243d0dd584be33cfa35e3 # main
+        uses: grafana/shared-workflows/actions/docker-build-push-image@d8353fd2c4ff821bd9a635f222305545ddb61266 # main
         with:
           platforms: linux/amd64,linux/arm64
           gar-environment: prod
