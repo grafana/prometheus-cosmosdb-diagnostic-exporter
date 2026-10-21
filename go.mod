@@ -1,6 +1,6 @@
 module github.com/grafana/prometheus-cosmosdb-diagnostic-exporter
 
-go 1.26.8
+go 1.27.3
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.15.0
