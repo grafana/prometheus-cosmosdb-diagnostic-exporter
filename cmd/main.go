@@ -52,9 +52,9 @@ func envOrDefault(key, fallback string) string {
 
 func (c *Config) RegisterFlags(f *flag.FlagSet) {
 	f.StringVar(&c.StorageAccountURL, "storage-account-url", "", "Azure Blob Storage account URL (e.g. https://myaccount.blob.core.windows.net).")
-	f.StringVar(&c.StorageAccountKey, "storage-account-key", envOrDefault("AZURE_STORAGE_KEY", ""), "Azure storage account key. If set, skips ARM key lookup (env: AZURE_STORAGE_KEY).")
-	f.StringVar(&c.SubscriptionID, "subscription-id", "", "Azure subscription ID containing the storage account.")
-	f.StringVar(&c.StorageResourceGroup, "storage-resource-group", "", "Resource group of the storage account.")
+	f.StringVar(&c.StorageAccountKey, "storage-account-key", envOrDefault("AZURE_STORAGE_KEY", ""), "Azure storage account key. If set, Shared Key authentication is used (env: AZURE_STORAGE_KEY).")
+	f.StringVar(&c.SubscriptionID, "subscription-id", "", "Azure subscription ID containing the storage account. Only used with -storage-resource-group to look up a storage key via ARM.")
+	f.StringVar(&c.StorageResourceGroup, "storage-resource-group", "", "Resource group of the storage account. Only used with -subscription-id to look up a storage key via ARM.")
 	f.StringVar(&c.BlobPathPrefix, "blob-path-prefix", "", "Optional prefix to scope blob listing (e.g. resourceId=SUBSCRIPTIONS/...).")
 	f.StringVar(&c.Cluster, "cluster", "", "Cluster label added to all exported metrics.")
 	f.DurationVar(&c.PollInterval, "poll-interval", time.Minute, "How frequently to poll for new blobs.")
@@ -84,15 +84,10 @@ func main() {
 		level.Error(logger).Log("msg", "-storage-account-url is required")
 		os.Exit(1)
 	}
-	if appCfg.StorageAccountKey == "" {
-		if appCfg.SubscriptionID == "" {
-			level.Error(logger).Log("msg", "-subscription-id is required when -storage-account-key is not set")
-			os.Exit(1)
-		}
-		if appCfg.StorageResourceGroup == "" {
-			level.Error(logger).Log("msg", "-storage-resource-group is required when -storage-account-key is not set")
-			os.Exit(1)
-		}
+	mode, err := selectAuthMode(appCfg)
+	if err != nil {
+		level.Error(logger).Log("msg", "invalid authentication configuration", "err", err)
+		os.Exit(1)
 	}
 	if appCfg.Cluster == "" {
 		level.Error(logger).Log("msg", "-cluster is required")
@@ -100,7 +95,7 @@ func main() {
 	}
 
 	// Configure Azure blob client.
-	client, err := newBlobClient(ctx, appCfg, logger)
+	client, err := newBlobClient(ctx, appCfg, mode, logger)
 	if err != nil {
 		level.Error(logger).Log("msg", "failed to create blob client", "err", err)
 		os.Exit(1)
@@ -156,10 +151,8 @@ func poll(ctx context.Context, client *azblob.Client, cfg *Config, exporter sdkm
 	}
 }
 
-// newBlobClient returns a blob client using Shared Key authentication.
-// If a storage account key is provided directly, it uses that. Otherwise, it
-// fetches the key via the ARM API using DefaultAzureCredential.
-func newBlobClient(ctx context.Context, cfg *Config, logger log.Logger) (*azblob.Client, error) {
+// newBlobClient returns a blob client for the given authentication mode.
+func newBlobClient(ctx context.Context, cfg *Config, mode authMode, logger log.Logger) (*azblob.Client, error) {
 	// Extract account name from URL (e.g. "myaccount" from "https://myaccount.blob.core.windows.net").
 	parsed, err := url.Parse(cfg.StorageAccountURL)
 	if err != nil {
@@ -167,17 +160,22 @@ func newBlobClient(ctx context.Context, cfg *Config, logger log.Logger) (*azblob
 	}
 	accountName := strings.Split(parsed.Hostname(), ".")[0]
 
-	var key string
-	if cfg.StorageAccountKey != "" {
-		key = cfg.StorageAccountKey
-		level.Info(logger).Log("msg", "using provided storage account key", "account", accountName)
-	} else {
-		var err error
+	level.Info(logger).Log("msg", "selected blob storage authentication mode", "mode", string(mode), "account", accountName)
+
+	if mode == authModeEntraID {
+		cred, err := azidentity.NewDefaultAzureCredential(nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating Azure credential: %w", err)
+		}
+		return azblob.NewClient(cfg.StorageAccountURL, cred, nil)
+	}
+
+	key := cfg.StorageAccountKey
+	if mode == authModeARMKey {
 		key, err = fetchStorageKeyViaARM(ctx, cfg, accountName)
 		if err != nil {
 			return nil, err
 		}
-		level.Info(logger).Log("msg", "fetched storage account key via ARM", "account", accountName)
 	}
 
 	sharedKey, err := azblob.NewSharedKeyCredential(accountName, key)
