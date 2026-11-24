@@ -17,9 +17,9 @@ Polls Azure Blob Storage for CosmosDB diagnostic logs and exports metrics via OT
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-storage-account-url` | (required) | Azure Blob Storage account URL |
-| `-storage-account-key` | `""` | Azure storage account key. If set, skips ARM key lookup (env: `AZURE_STORAGE_KEY`) |
-| `-subscription-id` | (required*) | Azure subscription ID (*not required when `-storage-account-key` is set) |
-| `-storage-resource-group` | (required*) | Resource group of the storage account (*not required when `-storage-account-key` is set) |
+| `-storage-account-key` | `""` | Azure storage account key. If set, Shared Key authentication is used (env: `AZURE_STORAGE_KEY`) |
+| `-subscription-id` | `""` | Azure subscription ID. Only used together with `-storage-resource-group` to look up a key via ARM (see Authentication) |
+| `-storage-resource-group` | `""` | Resource group of the storage account. Only used together with `-subscription-id` |
 | `-blob-path-prefix` | `""` | Prefix to scope blob listing (e.g. `resourceId=SUBSCRIPTIONS/...`) |
 | `-poll-interval` | `1m` | How frequently to poll for new blobs |
 | `-checkpoint-file` | `./checkpoint.json` | Path to the checkpoint file |
@@ -27,6 +27,16 @@ Polls Azure Blob Storage for CosmosDB diagnostic logs and exports metrics via OT
 | `-otlp-endpoint` | `""` | OTLP HTTP endpoint URL. Falls back to `OTEL_EXPORTER_OTLP_ENDPOINT` env var |
 | `-otlp-username` | `""` | OTLP basic auth username (env: `OTLP_USERNAME`) |
 | `-otlp-password` | `""` | OTLP basic auth password (env: `OTLP_PASSWORD`) |
+
+## Authentication
+
+The exporter picks the Blob Storage authentication mode at startup and logs it (`selected blob storage authentication mode`); keys are never logged.
+
+1. **Shared Key**: `-storage-account-key` (or `AZURE_STORAGE_KEY`) is set.
+2. **Microsoft Entra ID** (default when no key is set): uses [`DefaultAzureCredential`](https://learn.microsoft.com/azure/developer/go/sdk/authentication/credential-chains#defaultazurecredential-overview) to get a token, so it works on storage accounts with shared key access disabled. On AKS, use [Azure workload identity](https://learn.microsoft.com/azure/aks/workload-identity-overview): label the pod `azure.workload.identity/use: "true"` and annotate its service account with `azure.workload.identity/client-id`; the webhook injects `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_FEDERATED_TOKEN_FILE`. The identity needs the **Storage Blob Data Reader** role on the storage account (or the container scope).
+3. **ARM key lookup** (legacy): no key, but both `-subscription-id` and `-storage-resource-group` are set. The exporter fetches an account key via the ARM `ListKeys` API and uses Shared Key. This requires shared key access to be enabled and key-listing permission. Omit both flags to use Entra ID instead.
+
+Setting only one of `-subscription-id` / `-storage-resource-group` is an error.
 
 ## Metrics
 

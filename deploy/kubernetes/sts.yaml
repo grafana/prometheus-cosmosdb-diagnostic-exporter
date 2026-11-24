@@ -14,14 +14,22 @@ spec:
     metadata:
       labels:
         app: cosmosdb-diagnostic-exporter
+        # For Azure workload identity (keyless auth).
+        azure.workload.identity/use: "true"
     spec:
+      # The service account must be annotated with azure.workload.identity/client-id
+      # and the identity needs the "Storage Blob Data Reader" role on the storage account.
+      # serviceAccountName: <SERVICE_ACCOUNT>
       containers:
         - name: exporter
           image: us-docker.pkg.dev/grafanalabs-dev/docker-prometheus-cosmosdb-diagnostic-exporter-dev/prometheus-cosmosdb-diagnostic-exporter:latest
           args:
             - -storage-account-url=<STORAGE_ACCOUNT_URL>
-            - -subscription-id=<SUBSCRIPTION_ID>
-            - -storage-resource-group=<STORAGE_RESOURCE_GROUP>
+            # Without a storage key, subscription ID or resource group the exporter uses
+            # Microsoft Entra ID (Azure workload identity). Setting both of the following
+            # instead selects the legacy ARM key lookup.
+            # - -subscription-id=<SUBSCRIPTION_ID>
+            # - -storage-resource-group=<STORAGE_RESOURCE_GROUP>
             - -blob-path-prefix=<BLOB_PATH_PREFIX>
             - -otlp-endpoint=<OTLP_ENDPOINT>
             - -checkpoint-file=/data/checkpoint.json
